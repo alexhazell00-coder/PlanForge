@@ -132,7 +132,10 @@ class PlanForgeApp(tk.Tk):
             ("Recalculate", self.recalculate),
         ]
         for text, command in buttons:
-            ttk.Button(bar, text=text, command=command).pack(side="left", padx=(0, 6))
+            button = ttk.Button(bar, text=text, command=command)
+            button.pack(side="left", padx=(0, 6))
+            if text == "New":
+                self.new_button = button
         # Prominent convert button
         self.convert_button = ttk.Button(bar, text="Quick Convert ▶", style="Accent.TButton", command=self.quick_convert)
         self.convert_button.pack(side="left", padx=(12, 6))
@@ -143,24 +146,31 @@ class PlanForgeApp(tk.Tk):
         self._update_theme_button()
 
     def _bind_shortcuts(self) -> None:
-        self.bind("<Control-n>", lambda _e: self.new_project())
-        self.bind("<Control-o>", lambda _e: self.open_project())
-        self.bind("<Control-s>", lambda _e: self.save_project())
-        self.bind("<Control-S>", lambda _e: self.save_project_as())
-        self.bind("<Control-i>", lambda _e: self.import_project())
-        self.bind("<Control-e>", lambda _e: self.export_project())
-        self.bind("<Control-C>", lambda _e: self.quick_convert())
-        self.bind("<Control-q>", lambda _e: self.quit_app())
-        self.bind("<Control-t>", lambda _e: self.toggle_theme())
-        self.bind("<Control-k>", lambda _e: self.show_shortcuts())
-        self.bind("<F1>", lambda _e: self.open_help())
-        self.bind("<F5>", lambda _e: self.recalculate())
+        # A binding on the Tk root widget itself only fires when that widget has
+        # focus. Most input focus is in a child widget, so bind shortcuts at the
+        # application level instead. Returning "break" prevents the focused
+        # control from also handling the key (for example, Ctrl+N in a text box).
+        def bind(sequence: str, action: Callable[[], Any]) -> None:
+            self.bind_all(sequence, lambda _event: (action(), "break")[1])
+
+        bind("<Control-n>", self.new_project)
+        bind("<Control-o>", self.open_project)
+        bind("<Control-s>", self.save_project)
+        bind("<Control-S>", self.save_project_as)
+        bind("<Control-i>", self.import_project)
+        bind("<Control-e>", self.export_project)
+        bind("<Control-C>", self.quick_convert)
+        bind("<Control-q>", self.quit_app)
+        bind("<Control-t>", self.toggle_theme)
+        bind("<Control-k>", self.show_shortcuts)
+        bind("<F1>", self.open_help)
+        bind("<F5>", self.recalculate)
         # Bind Ctrl+1..9 and Ctrl+0 for 10 tabs (0 = 10th)
         for index in range(min(len(VIEWS), 9)):
-            self.bind(f"<Control-Key-{index + 1}>", lambda _e, i=index: self._select_tab(i))
+            bind(f"<Control-Key-{index + 1}>", lambda i=index: self._select_tab(i))
         if len(VIEWS) >= 10:
-            self.bind("<Control-Key-0>", lambda _e: self._select_tab(9))
-        # Also handle Ctrl+Shift+C for quick convert (already bound via Control-C upper)
+            bind("<Control-Key-0>", lambda: self._select_tab(9))
+        # Also handle Ctrl+Shift+C for quick convert (Control-C with Shift).
 
     # ------------------------------------------------------------------
     # Running actions

@@ -110,6 +110,16 @@ def format_money(amount: float, currency: str) -> str:
     return f"{symbol}{amount:,.2f}"
 
 
+def create_new_project() -> Project:
+    """Create a blank project for the user's New Project action."""
+    return Project(
+        name="Untitled project",
+        start_date=date.today(),
+        currency="GBP",
+        calendars=[Calendar(name="Standard Working Week", working_days=[0, 1, 2, 3, 4])],
+    )
+
+
 def create_default_project() -> Project:
     """Create the sample project shown on first launch."""
     today = date.today()
@@ -178,7 +188,7 @@ class ProjectSession:
     # ------------------------------------------------------------------
 
     def new_project(self) -> None:
-        self._replace(create_default_project(), file_path=None, dirty=False)
+        self._replace(create_new_project(), file_path=None, dirty=False)
 
     def open_pfp(self, path: str | Path) -> None:
         try:
@@ -755,5 +765,6 @@ __all__ = [
     "TaskRow",
     "WEEKDAY_NAMES",
     "create_default_project",
+    "create_new_project",
     "format_money",
 ]

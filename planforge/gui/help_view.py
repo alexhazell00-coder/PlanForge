@@ -239,7 +239,7 @@ HELP_SECTIONS: list[tuple[str, str, str]] = [
         "Menus, Toolbar & Keyboard Shortcuts",
         (
             "File menu:\n"
-            "• New Project (Ctrl+N): Replaces current project with the sample 'Website Redesign' project. Asks to save if dirty.\n"
+            "• New Project (Ctrl+N): Starts a blank project. Asks to save if the current project has unsaved changes.\n"
             "• Open… (Ctrl+O): Opens a .pfp PlanForge database. Replaces current project.\n"
             "• Save (Ctrl+S): Saves to current .pfp path, or prompts for Save As if never saved.\n"
             "• Save As… (Ctrl+Shift+S): Choose any .pfp location.\n"

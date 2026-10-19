@@ -47,6 +47,22 @@ class DesktopWindowTests(unittest.TestCase):
             timeline.refresh()
             self.assertGreater(len(self.app.views["timeline"].chart.find_all()), 0)
 
+    def test_new_toolbar_button_starts_a_blank_project(self) -> None:
+        self.app.new_button.invoke()
+        self.assertEqual(self.app.session.project.name, "Untitled project")
+        self.assertEqual(self.app.session.project.tasks, [])
+
+    def test_ctrl_n_works_while_a_child_widget_has_focus(self) -> None:
+        entry = tk.Entry(self.app)
+        entry.pack()
+        entry.focus_force()
+        self.app.update()
+        entry.event_generate("<Control-n>")
+        self.app.update()
+        self.assertEqual(self.app.session.project.name, "Untitled project")
+        self.assertEqual(self.app.session.project.tasks, [])
+        entry.destroy()
+
     def test_theme_toggle_keeps_views_consistent(self) -> None:
         before = self.app.theme_name
         self.app.toggle_theme()
