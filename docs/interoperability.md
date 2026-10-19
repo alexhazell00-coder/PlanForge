@@ -29,7 +29,7 @@ PlanForge avoids vendor lock-in by using open, standard interchange formats and 
 - **Interchange Format:** Microsoft Project XML (`.xml`).
 - **Exporting from ProjectLibre:** Open your project in ProjectLibre Desktop, choose **File → Save As**, and choose **Microsoft Project XML (*.xml)**.
 - **Importing into PlanForge:** Open or drag-and-drop the `.xml` file into PlanForge. Tasks, nested subtasks, start/finish dates, durations, dependencies (Finish-to-Start, Start-to-Start, Finish-to-Finish, Start-to-Finish with lag), milestones, resources, hourly rates, and assignments will be loaded into PlanForge's project model.
-- **Exporting back to ProjectLibre:** In PlanForge, choose **Export → Microsoft Project XML (.xml)**. Open the resulting `.xml` file directly in ProjectLibre.
+- **Exporting back to ProjectLibre:** In PlanForge, choose **File → Export…** and select **Microsoft Project XML (.xml)**. Open the resulting `.xml` file directly in ProjectLibre.
 - **Why not `.pod` directly?** ProjectLibre `.pod` files use native Java object serialization (`java.io.ObjectOutputStream`, magic header `0xACED0005`). Direct manipulation without running the full ProjectLibre Java runtime is unsafe and prone to serialization discrepancies. The XML interchange workflow is the official, lossless interchange method recommended by ProjectLibre.
 
 ### 2. Microsoft Project
@@ -37,7 +37,7 @@ PlanForge avoids vendor lock-in by using open, standard interchange formats and 
 - **Interchange Format:** Microsoft Project XML / MSPDI (`.xml`).
 - **Exporting from MS Project:** Open your project in MS Project, select **File → Save As**, and select **XML Format (*.xml)**.
 - **Importing into PlanForge:** Open the `.xml` file in PlanForge.
-- **Exporting back to MS Project:** In PlanForge, select **Export → Microsoft Project XML (.xml)**. Microsoft Project 2003 through 2021/365 opens this standard XML format natively.
+- **Exporting back to MS Project:** In PlanForge, choose **File → Export…** and select **Microsoft Project XML (.xml)**. Microsoft Project 2003 through 2021/365 opens this standard XML format natively.
 - **Why not `.mpp` directly?** `.mpp` is a proprietary binary compound document format without an open write specification. Microsoft Project itself provides the XML format specifically for third-party tool interoperability.
 
 ### 3. GanttProject

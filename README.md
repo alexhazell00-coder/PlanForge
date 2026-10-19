@@ -25,7 +25,7 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
   - Working days, non-working days, and project holidays.
   - Daily capacity divided across assigned team members.
   - Bottom-up summary task rollup.
-- **Interactive UI/UX Workspace (`planforge/ui/`):**
+- **Native Desktop Workspace (`planforge/gui/`, Tkinter):**
   - **Overview:** Metric cards, schedule span, critical path bottlenecks, team workload progress.
   - **Tasks:** Hierarchical table with indent/outdent, duration, progress bars, predecessors, and people.
   - **Timeline (Gantt Chart):** Visual bars, milestone diamonds, summary brackets, SVG dependency link arrows, weekend shading, day/week/month zoom.
@@ -34,8 +34,9 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
   - **Function Point Calculator:** Built-in FP estimation with instant transfer to project tasks.
   - **Summary Report:** Readable text report with clipboard copy and `.txt` export.
   - **Project Settings:** Project metadata, start date, currency, and working calendars.
-  - **Light & Dark Theme:** System-aware, configurable in `.config/PlanForge/PlanForge.conf`.
-  - **Keyboard Navigation:** `Ctrl+1` through `Ctrl+5`, `Ctrl+S`, `Ctrl+N`.
+  - **Light & Dark Theme:** Toggle with `Ctrl+T` or the toolbar; the choice is saved in `~/.config/PlanForge/PlanForge.conf`.
+  - **Keyboard Navigation:** `Ctrl+1` to `Ctrl+8` switch tabs, `Ctrl+N` new, `Ctrl+O` open, `Ctrl+S` save, `Ctrl+Shift+S` save as, `Ctrl+I` import, `Ctrl+E` export, `F5` recalculate.
+- **No server, no browser:** PlanForge is a desktop application. Everything runs in one Python process with the standard library's Tkinter window.
 
 ---
 
@@ -43,21 +44,29 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ### 1. Launch the Application
 
-PlanForge runs on Python 3.10+ without any third-party library dependencies.
+PlanForge runs on Python 3.10+ without any third-party library dependencies. The window uses Tkinter, which ships with most Python installers:
 
-Start the application server:
+- **Windows and macOS:** the python.org installer includes Tk.
+- **Debian and Ubuntu:** `sudo apt install python3-tk`
+- **Fedora:** `sudo dnf install python3-tkinter`
 
-```bash
-./bin/planforge --port 8080
-```
-
-or via Python module:
+Start the application:
 
 ```bash
-python3 -m planforge --port 8080
+./bin/planforge
 ```
 
-Open your web browser at `http://localhost:8080` (or use the sandbox live preview URL).
+or via the Python module:
+
+```bash
+python3 -m planforge
+```
+
+To open a project straight away, pass its `.pfp` file:
+
+```bash
+./bin/planforge my_project.pfp
+```
 
 ### 2. Command-Line File Conversion
 
@@ -73,6 +82,8 @@ PlanForge can convert projects between supported formats directly from the comma
 # Inspect any project file
 ./bin/planforge --import-file my_project.json
 ```
+
+These flags run without opening a window.
 
 ### 3. Run the Automated Tests
 
@@ -134,9 +145,17 @@ PlanForge/
 │       └── test_fp_logic.py    # FP unit tests
 ├── planforge/
 │   ├── __init__.py
-│   ├── __main__.py             # CLI entry point
+│   ├── __main__.py             # Desktop entry point and CLI conversion
+│   ├── config.py               # Theme preference in PlanForge.conf
+│   ├── estimation.py           # Bridge to the Function Point Calculator maths
 │   ├── model.py                # Canonical project data model
-│   ├── server.py               # Application server & REST API
+│   ├── session.py              # Open project and every operation on it (no GUI code)
+│   ├── gui/                    # Tkinter desktop interface
+│   │   ├── app.py              # Main window, menus, shortcuts, file actions
+│   │   ├── theme.py            # Light and dark palettes and ttk styles
+│   │   ├── views.py            # Overview, Tasks, People, Costs, Function Points, Report, Settings
+│   │   ├── timeline.py         # Gantt chart drawn on a Canvas
+│   │   └── dialogs.py          # Task editor, forms, import and export dialogs
 │   ├── interchange/            # Modular format adapters
 │   │   ├── registry.py         # Format registry, sniffers, atomic file operations
 │   │   ├── mspdi_adapter.py    # Microsoft Project & ProjectLibre XML adapter
@@ -149,18 +168,15 @@ PlanForge/
 │   │   └── results.py          # Summary and result containers
 │   ├── scheduling/
 │   │   └── engine.py           # Forward/backward pass, float, capacity, calendars
-│   ├── storage/
-│   │   └── sqlite_store.py     # Transactional .pfp SQLite storage
-│   └── ui/                     # Design-system UI assets
-│       ├── index.html          # Clean, semantic SPA markup
-│       ├── style.css           # CSS design system (Light/Dark themes)
-│       └── app.js              # View router, interactive Gantt, FP sync
+│   └── storage/
+│       └── sqlite_store.py     # Transactional .pfp SQLite storage
 ├── schemas/
 │   └── planforge-project-v1.schema.json # JSON Schema Draft 2020-12
 └── tests/
     ├── fixtures/               # Real project file fixtures (.xml, .gan, .json)
     ├── test_interchange.py     # Comprehensive adapter & round-trip tests
-    └── test_server_and_ui.py   # Full 15 UI/UX workflow integration tests
+    ├── test_session.py         # Workflow tests for projects, tasks, people, estimates, files (no display needed)
+    └── test_gui.py             # Window smoke tests (skipped unless Tk and a display are available)
 ```
 
 ---
