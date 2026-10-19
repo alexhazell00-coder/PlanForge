@@ -15,7 +15,7 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 | **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
 | **Linux** | Run **`./PlanForgeLauncher.sh`** |
 | **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
-| **Any system** | `python3 PlanForgeLauncher.py` |
+| **Any system** | `python PlanForgeLauncher.py` (or `python3`) |
 
 The launcher detects your operating system, prepares a project-local `.venv`,
 installs any declared dependencies and starts the application. The older
@@ -60,17 +60,10 @@ and do the same thing.
 
 ### 1. Launch the Application
 
-The universal launcher prepares everything for you. It detects the operating
-system, finds Python 3.10+, creates a project-local `.venv`, installs any
-dependencies declared in `requirements.txt` and starts PlanForge. No packages
-are installed globally and no administrator rights are needed.
-
-| System | Launch |
-| --- | --- |
-| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
-| **Linux** | `./PlanForgeLauncher.sh` |
-| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
-| **Any system** | `python3 PlanForgeLauncher.py` |
+Use the launcher for your system from [Start Here](#start-here). It detects the
+operating system, finds Python 3.10+, creates a project-local `.venv`, installs
+any dependencies declared in `requirements.txt` and starts PlanForge. No
+packages are installed globally and no administrator rights are needed.
 
 On Windows the launcher normally uses `pythonw.exe`, so there is no console
 window during use; first-time setup reports progress in a small window and

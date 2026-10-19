@@ -26,10 +26,11 @@ setup lock, and runs `python -m planforge` from the installation directory.
 | Linux | `./PlanForgeLauncher.sh` | `./PlanForgeLauncher.sh --check` |
 | macOS (Terminal) | `./PlanForgeLauncher.sh` | `./PlanForgeLauncher.sh --check` |
 | macOS (Finder) | Double-click **`PlanForgeLauncher.command`** | `./PlanForgeLauncher.command --check` |
-| Any system | `python3 PlanForgeLauncher.py` | `python3 PlanForgeLauncher.py --check` |
+| Any system | `python PlanForgeLauncher.py` (or `python3`) | `python PlanForgeLauncher.py --check` |
 
-Double-clicking with no arguments starts the desktop application. Any argument
-is treated as a command-line session, so output stays in the console.
+Double-clicking with no arguments starts the desktop application. If you pass a
+command-line operation such as `--import-file` or `--help`, output stays in the
+console; passing a project file opens the desktop application.
 
 The launcher works from any current directory. Relative project paths are
 resolved against the directory you launched from, and the application itself
