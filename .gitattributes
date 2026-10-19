@@ -1,0 +1,6 @@
+# Keep Windows batch files usable when checked out on any platform and keep
+# Unix entry points free of CRLF line endings.
+*.bat text eol=crlf
+run.sh text eol=lf
+run.command text eol=lf
+launcher.py text eol=lf

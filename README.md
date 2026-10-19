@@ -44,21 +44,47 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ### 1. Launch the Application
 
-PlanForge runs on Python 3.10+ without any third-party library dependencies. The window uses Tkinter, which ships with most Python installers:
+The universal launcher prepares everything for you. It detects the operating
+system, finds Python 3.10+, creates a project-local `.venv`, installs any
+dependencies declared in `requirements.txt` and starts PlanForge. No packages
+are installed globally and no administrator rights are needed.
 
-- **Windows and macOS:** the python.org installer includes Tk.
+| System | Launch |
+| --- | --- |
+| **Windows 10/11** | Double-click **`run.bat`** |
+| **Linux** | `./run.sh` |
+| **macOS** | Double-click **`run.command`**, or run `./run.sh` |
+| **Any system** | `python3 launcher.py` |
+
+On Windows the launcher normally uses `pythonw.exe`, so there is no console
+window during use; first-time setup reports progress in a small window and
+errors appear in dialogs. Projects can be passed through, for example
+`run.bat my_project.pfp` or `./run.sh my_project.pfp`.
+
+Check the environment without changing anything:
+
+```bash
+./run.sh --check          # Linux/macOS
+run.bat --check           # Windows
+```
+
+If Python or Tkinter is missing, the launcher prints the exact package or
+installer to use. See [`docs/launcher.md`](docs/launcher.md) for per-platform
+instructions, exit codes, logs and troubleshooting.
+
+PlanForge itself runs on Python 3.10+ without any third-party library
+dependencies. The window uses Tkinter, which ships with the python.org
+installers on Windows and macOS and is a system package on Linux:
+
 - **Debian and Ubuntu:** `sudo apt install python3-tk`
+- **Arch Linux:** `sudo pacman -S tk`
 - **Fedora:** `sudo dnf install python3-tkinter`
 
-Start the application:
+If you already manage your own Python environment, the original entry points
+continue to work:
 
 ```bash
 ./bin/planforge
-```
-
-or via the Python module:
-
-```bash
 python3 -m planforge
 ```
 
@@ -135,9 +161,15 @@ Existing Software (Reopen and continue)
 
 ```
 PlanForge/
+├── launcher.py                 # Universal OS detection, .venv setup and startup
+├── run.bat                     # Windows double-click entry point
+├── run.sh                      # Linux/macOS entry point
+├── run.command                 # macOS Finder entry point
+├── requirements.txt            # Runtime dependency manifest (stdlib-only today)
 ├── bin/
-│   └── planforge               # Executable application launcher
+│   └── planforge               # Manual entry point for existing environments
 ├── docs/
+│   ├── launcher.md             # Launcher guide, platform notes and exit codes
 │   └── interoperability.md     # Detailed interoperability specifications
 ├── function-point-calculator/  # Integrated Simple Function Point Calculator
 │   └── function-point-calculator-main/
@@ -174,6 +206,7 @@ PlanForge/
 │   └── planforge-project-v1.schema.json # JSON Schema Draft 2020-12
 └── tests/
     ├── fixtures/               # Real project file fixtures (.xml, .gan, .json)
+    ├── test_launcher.py        # Launcher platform, venv, locking, path and startup tests
     ├── test_interchange.py     # Comprehensive adapter & round-trip tests
     ├── test_session.py         # Workflow tests for projects, tasks, people, estimates, files (no display needed)
     └── test_gui.py             # Window smoke tests (skipped unless Tk and a display are available)
