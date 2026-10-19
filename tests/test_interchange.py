@@ -420,9 +420,9 @@ class CsvTests(unittest.TestCase):
 class RegistryAndFileSafetyTests(unittest.TestCase):
     def test_registry_lists_only_formats_with_working_adapters(self) -> None:
         registry = FormatRegistry()
-        self.assertEqual({item.id for item in registry.import_formats()}, {"planforge-json", "csv"})
-        self.assertEqual({item.id for item in registry.export_formats()}, {"planforge-json", "csv"})
-        self.assertTrue(all(not item.external_application_round_trip_tested for item in registry.formats()))
+        expected = {"planforge-json", "csv", "microsoft-project-xml", "ganttproject", "function-point-json"}
+        self.assertEqual({item.id for item in registry.import_formats()}, expected)
+        self.assertEqual({item.id for item in registry.export_formats()}, expected)
 
     def test_content_detection_beats_extension(self) -> None:
         registry = FormatRegistry()
@@ -468,15 +468,155 @@ class RegistryAndFileSafetyTests(unittest.TestCase):
             self.assertEqual(imported.project.name, "Replacement")  # type: ignore[union-attr]
             self.assertEqual(list(Path(directory).glob("*.tmp")), [])
 
-    def test_xml_and_other_unimplemented_formats_are_not_claimed(self) -> None:
+    def test_pod_and_mpp_unsupported_guidance(self) -> None:
         registry = FormatRegistry()
-        detection = registry.detect(b"<Project></Project>", "schedule.xml")
-        self.assertIsNone(detection.format_id)
-        self.assertIn("format.unsupported", {issue.code for issue in detection.issues})
-        manager = InterchangeManager(registry)
-        result = manager.export_file(sample_project(), "microsoft-project-xml", "x.xml")
-        self.assertFalse(result.success)
-        self.assertIn("format.export.unsupported", {issue.code for issue in result.errors})
+        pod_detection = registry.detect(b"\xac\xed\x00\x05sample", "project.pod")
+        self.assertIsNone(pod_detection.format_id)
+        self.assertIn("format.pod_unsupported", {issue.code for issue in pod_detection.issues})
+        self.assertIn("ProjectLibre XML", pod_detection.issues[0].message)
+
+        mpp_detection = registry.detect(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1sample", "project.mpp")
+        self.assertIsNone(mpp_detection.format_id)
+        self.assertIn("format.mpp_unsupported", {issue.code for issue in mpp_detection.issues})
+        self.assertIn("Microsoft Project XML", mpp_detection.issues[0].message)
+
+
+class MSPDIAndProjectLibreTests(unittest.TestCase):
+    def test_import_sample_projectlibre_xml(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parent / "fixtures" / "sample_projectlibre.xml"
+        result = manager.import_file(fixture)
+        self.assertTrue(result.success, result.issues)
+        project = result.project
+        assert project is not None
+        self.assertEqual(project.name, "Software Development Plan")
+        self.assertEqual(len(project.tasks), 8)
+        self.assertEqual(sum(t.parent_id is not None for t in project.tasks), 4)
+        self.assertEqual(sum(t.milestone for t in project.tasks), 2)
+        self.assertEqual(len(project.dependencies), 5)
+        self.assertEqual(len(project.resources), 3)
+        self.assertEqual(len(project.assignments), 4)
+
+    def test_mspdi_round_trip(self) -> None:
+        manager = InterchangeManager()
+        project = sample_project()
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "mspdi_roundtrip.xml"
+            exported = manager.export_file(project, "microsoft-project-xml", target)
+            self.assertTrue(exported.success, exported.issues)
+            imported = manager.import_file(target)
+            self.assertTrue(imported.success, imported.issues)
+            re_project = imported.project
+            assert re_project is not None
+            self.assertEqual(len(project.tasks), len(re_project.tasks))
+            self.assertEqual(len(project.dependencies), len(re_project.dependencies))
+            self.assertEqual(len(project.resources), len(re_project.resources))
+            self.assertEqual(len(project.assignments), len(re_project.assignments))
+
+    def test_malformed_xml_handling(self) -> None:
+        from planforge.interchange.mspdi_adapter import import_bytes
+        res = import_bytes(b"<Project><Unclosed>")
+        self.assertFalse(res.success)
+        self.assertEqual(res.errors[0].code, "xml.parse_error")
+
+
+class GanttProjectTests(unittest.TestCase):
+    def test_import_sample_gan(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parent / "fixtures" / "house_building_sample.gan"
+        result = manager.import_file(fixture)
+        self.assertTrue(result.success, result.issues)
+        project = result.project
+        assert project is not None
+        self.assertEqual(len(project.tasks), 20)
+        self.assertEqual(len(project.dependencies), 17)
+        self.assertEqual(len(project.resources), 7)
+        self.assertEqual(len(project.assignments), 30)
+
+    def test_ganttproject_round_trip(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parent / "fixtures" / "house_building_sample.gan"
+        imp1 = manager.import_file(fixture)
+        assert imp1.project is not None
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "exported.gan"
+            exported = manager.export_file(imp1.project, "ganttproject", target)
+            self.assertTrue(exported.success, exported.issues)
+            imp2 = manager.import_file(target)
+            self.assertTrue(imp2.success, imp2.issues)
+            assert imp2.project is not None
+            self.assertEqual(len(imp1.project.tasks), len(imp2.project.tasks))
+            self.assertEqual(len(imp1.project.dependencies), len(imp2.project.dependencies))
+            self.assertEqual(len(imp1.project.resources), len(imp2.project.resources))
+            self.assertEqual(len(imp1.project.assignments), len(imp2.project.assignments))
+
+    def test_malformed_gan_handling(self) -> None:
+        from planforge.interchange.ganttproject_adapter import import_bytes
+        res = import_bytes(b"<not_project></not_project>")
+        self.assertFalse(res.success)
+        self.assertEqual(res.errors[0].code, "gan.root_invalid")
+
+
+class FunctionPointCalculatorAdapterTests(unittest.TestCase):
+    def test_import_example_input_json(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parents[1] / "function-point-calculator" / "function-point-calculator-main" / "example_input.json"
+        result = manager.import_file(fixture)
+        self.assertTrue(result.success, result.issues)
+        p = result.project
+        assert p is not None
+        self.assertEqual(len(p.resources), 2)
+        self.assertEqual(len(p.tasks), 5)
+        self.assertEqual(len(p.assignments), 5)
+        # Check task hours calculated correctly
+        task_names = {t.name: t for t in p.tasks}
+        self.assertEqual(task_names["Design user interface"].estimated_work, 20.0)
+        self.assertEqual(task_names["Design user interface"].estimated_cost, 600.0)
+        self.assertEqual(task_names["Integration testing"].estimated_work, 18.0)
+        self.assertEqual(task_names["Integration testing"].estimated_cost, 405.0)
+
+    def test_fp_round_trip(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parents[1] / "function-point-calculator" / "function-point-calculator-main" / "example_input.json"
+        imp = manager.import_file(fixture)
+        assert imp.project is not None
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "fp_out.json"
+            exported = manager.export_file(imp.project, "function-point-json", target)
+            self.assertTrue(exported.success, exported.issues)
+            re_imp = manager.import_file(target)
+            self.assertTrue(re_imp.success, re_imp.issues)
+            assert re_imp.project is not None
+            self.assertEqual(len(imp.project.tasks), len(re_imp.project.tasks))
+            self.assertEqual(len(imp.project.resources), len(re_imp.project.resources))
+
+
+class CrossSoftwareInterchangeTests(unittest.TestCase):
+    def test_cross_interchange_projectlibre_to_ganttproject_and_back(self) -> None:
+        manager = InterchangeManager()
+        fixture = Path(__file__).parent / "fixtures" / "sample_projectlibre.xml"
+        imp_xml = manager.import_file(fixture)
+        assert imp_xml.project is not None
+        with tempfile.TemporaryDirectory() as td:
+            gan_path = Path(td) / "cross.gan"
+            exp_gan = manager.export_file(imp_xml.project, "ganttproject", gan_path)
+            self.assertTrue(exp_gan.success, exp_gan.issues)
+
+            imp_gan = manager.import_file(gan_path)
+            self.assertTrue(imp_gan.success, imp_gan.issues)
+            assert imp_gan.project is not None
+
+            xml_path = Path(td) / "cross.xml"
+            exp_xml = manager.export_file(imp_gan.project, "microsoft-project-xml", xml_path)
+            self.assertTrue(exp_xml.success, exp_xml.issues)
+
+            imp_xml2 = manager.import_file(xml_path)
+            self.assertTrue(imp_xml2.success, imp_xml2.issues)
+            assert imp_xml2.project is not None
+
+            self.assertEqual(len(imp_xml.project.tasks), len(imp_xml2.project.tasks))
+            self.assertEqual(len(imp_xml.project.dependencies), len(imp_xml2.project.dependencies))
+            self.assertEqual(len(imp_xml.project.resources), len(imp_xml2.project.resources))
 
 
 class ComparisonTests(unittest.TestCase):

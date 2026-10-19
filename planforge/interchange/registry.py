@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from planforge.interchange import csv_adapter, json_adapter
+from planforge.interchange import (
+    csv_adapter,
+    fp_adapter,
+    ganttproject_adapter,
+    json_adapter,
+    mspdi_adapter,
+)
 from planforge.interchange.csv_adapter import CsvImportOptions
 from planforge.interchange.results import ExportResult, ImportResult
 from planforge.interchange.validation import ValidationIssue
@@ -50,6 +56,8 @@ class FormatRegistry:
         self._importers: dict[str, Callable[..., ImportResult]] = {}
         self._exporters: dict[str, Callable[..., ExportResult]] = {}
         self._sniffers: dict[str, Callable[[bytes, str], bool]] = {}
+
+        # 1. PlanForge JSON
         self.register(
             FormatDefinition(
                 id=json_adapter.FORMAT_ID,
@@ -63,6 +71,8 @@ class FormatRegistry:
             importer=lambda data, **kwargs: json_adapter.import_bytes(data, source_name=kwargs.get("source_name")),
             exporter=lambda project, **kwargs: json_adapter.export_project(project),
         )
+
+        # 2. PlanForge CSV
         self.register(
             FormatDefinition(
                 id=csv_adapter.FORMAT_ID,
@@ -81,6 +91,69 @@ class FormatRegistry:
             exporter=lambda project, **kwargs: csv_adapter.export_project(
                 project, spreadsheet_safe=bool(kwargs.get("spreadsheet_safe", False))
             ),
+        )
+
+        # 3. Microsoft Project XML / ProjectLibre XML (MSPDI)
+        self.register(
+            FormatDefinition(
+                id=mspdi_adapter.FORMAT_ID,
+                name=mspdi_adapter.FORMAT_NAME,
+                extensions=(".xml",),
+                can_import=True,
+                can_export=True,
+                description="Microsoft Project Data Interchange XML (MSPDI). Standard format for Microsoft Project and ProjectLibre.",
+                tested_at_adapter_level=True,
+            ),
+            importer=lambda data, **kwargs: mspdi_adapter.import_bytes(data, source_name=kwargs.get("source_name")),
+            exporter=lambda project, **kwargs: mspdi_adapter.export_project(project),
+            sniffer=lambda data, suffix: (
+                b"<Project" in data or b"<project" in data
+            ) and (
+                b"http://schemas.microsoft.com/project" in data
+                or b"<SaveVersion>" in data
+                or b"<MinutesPerDay>" in data
+                or b"<Tasks>" in data
+                or suffix == ".xml"
+            ),
+        )
+
+        # 4. GanttProject (.gan)
+        self.register(
+            FormatDefinition(
+                id=ganttproject_adapter.FORMAT_ID,
+                name=ganttproject_adapter.FORMAT_NAME,
+                extensions=(".gan",),
+                can_import=True,
+                can_export=True,
+                description="GanttProject native XML project format (.gan). Preserves task hierarchy, dependencies, resources and allocations.",
+                tested_at_adapter_level=True,
+            ),
+            importer=lambda data, **kwargs: ganttproject_adapter.import_bytes(data, source_name=kwargs.get("source_name")),
+            exporter=lambda project, **kwargs: ganttproject_adapter.export_project(project),
+            sniffer=lambda data, suffix: (
+                b"<project" in data
+            ) and (
+                b"gantt-divider-location" in data
+                or b"view-date" in data
+                or b"<tasks empty-milestones" in data
+                or suffix == ".gan"
+            ),
+        )
+
+        # 5. Simple Function Point Calculator JSON
+        self.register(
+            FormatDefinition(
+                id=fp_adapter.FORMAT_ID,
+                name=fp_adapter.FORMAT_NAME,
+                extensions=(".json",),
+                can_import=True,
+                can_export=True,
+                description="Simple Function Point Calculator JSON project format with people, rates, and function point counts.",
+                tested_at_adapter_level=True,
+            ),
+            importer=lambda data, **kwargs: fp_adapter.import_bytes(data, source_name=kwargs.get("source_name")),
+            exporter=lambda project, **kwargs: fp_adapter.export_project(project),
+            sniffer=lambda data, suffix: fp_adapter.is_function_point_json(data),
         )
 
     def register(
@@ -132,10 +205,48 @@ class FormatRegistry:
         return tuple(item for item in self._formats.values() if item.can_export)
 
     def detect(self, data: bytes, filename: str | Path | None = None) -> FormatDetection:
-        """Detect JSON/CSV by structure first, then use a supported extension."""
+        """Detect format by structure first, then use a supported extension."""
 
         suffix = Path(filename).suffix.casefold() if filename is not None else ""
         issues: list[ValidationIssue] = []
+
+        # Check for ProjectLibre .pod native format
+        if suffix == ".pod" or data.startswith(b"\xac\xed"):
+            return FormatDetection(
+                None,
+                (
+                    _issue(
+                        "error",
+                        "format.pod_unsupported",
+                        "$",
+                        "ProjectLibre native .pod files use a binary Java serialization format that cannot be safely converted directly without the ProjectLibre application. "
+                        "To work with this project in PlanForge, please open it in ProjectLibre, select File -> Save As -> Microsoft Project XML (.xml), "
+                        "and import that XML file. PlanForge fully supports ProjectLibre XML with tasks, dependencies, resources, and calendars.",
+                    ),
+                ),
+            )
+
+        # Check for Microsoft Project .mpp native format
+        if suffix == ".mpp" or data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+            return FormatDetection(
+                None,
+                (
+                    _issue(
+                        "error",
+                        "format.mpp_unsupported",
+                        "$",
+                        "Microsoft Project native .mpp files use a proprietary Microsoft binary format. "
+                        "To exchange projects with PlanForge, please open the project in Microsoft Project, select File -> Save As -> XML Format (*.xml), "
+                        "and import that XML file. PlanForge provides comprehensive import and export for Microsoft Project XML (MSPDI).",
+                    ),
+                ),
+            )
+
+        # Check Function Point Calculator format first if JSON
+        if fp_adapter.is_function_point_json(data):
+            detected = fp_adapter.FORMAT_ID
+            return FormatDetection(detected, ())
+
         try:
             text = data.decode("utf-8-sig")
         except UnicodeDecodeError:
@@ -144,12 +255,12 @@ class FormatRegistry:
         detected: str | None = None
         if text is not None:
             stripped = text.lstrip()
+
+            # JSON detection
             if stripped.startswith(("{", "[")):
                 try:
                     document: Any = json.loads(text)
                 except (json.JSONDecodeError, RecursionError):
-                    # Send malformed JSON to the JSON parser if the extension
-                    # indicates JSON, so it can provide a precise parse error.
                     if suffix == ".json":
                         detected = json_adapter.FORMAT_ID
                 else:
@@ -158,9 +269,24 @@ class FormatRegistry:
                         or ("schema_version" in document and "project" in document)
                     ):
                         detected = json_adapter.FORMAT_ID
+                    elif isinstance(document, dict) and document.get("application") == "Simple Function Point Calculator":
+                        detected = fp_adapter.FORMAT_ID
                     elif suffix == ".json":
                         detected = json_adapter.FORMAT_ID
 
+            # XML detection (MSPDI or GanttProject)
+            if detected is None and stripped.startswith("<"):
+                if "gantt-divider-location" in stripped or (suffix == ".gan" and "<project" in stripped):
+                    detected = ganttproject_adapter.FORMAT_ID
+                elif (
+                    "http://schemas.microsoft.com/project" in stripped
+                    or "<SaveVersion>" in stripped
+                    or "<MinutesPerDay>" in stripped
+                    or (suffix == ".xml" and ("<Project" in stripped or "<project" in stripped))
+                ):
+                    detected = mspdi_adapter.FORMAT_ID
+
+            # CSV detection
             if detected is None:
                 try:
                     dialect = csv.Sniffer().sniff(text[:65536], delimiters=",;\t|")
@@ -174,10 +300,15 @@ class FormatRegistry:
                     }
                     if header_names & {"task", "taskname", "name", "title", "subject", "taskid", "startdate"}:
                         detected = csv_adapter.FORMAT_ID
+
             if detected is None and suffix == ".csv":
                 detected = csv_adapter.FORMAT_ID
             elif detected is None and suffix == ".json":
                 detected = json_adapter.FORMAT_ID
+            elif detected is None and suffix == ".xml":
+                detected = mspdi_adapter.FORMAT_ID
+            elif detected is None and suffix == ".gan":
+                detected = ganttproject_adapter.FORMAT_ID
 
         if detected is None:
             for candidate_id, sniffer in self._sniffers.items():
@@ -186,28 +317,43 @@ class FormatRegistry:
                         detected = candidate_id
                         break
                 except Exception:
-                    # A detector is advisory; malformed content must be
-                    # reported by the selected parser, not crash file picking.
                     continue
+
         if detected is None and suffix:
             extension_matches = [
                 item.id for item in self._formats.values() if suffix in item.extensions
             ]
             if len(extension_matches) == 1:
                 detected = extension_matches[0]
+
         if detected is None:
-            return FormatDetection(None, (_issue(
-                "error", "format.unsupported", "$",
-                "Could not identify this file as PlanForge JSON or CSV. Supported formats in this build: .json and .csv.",
-            ),))
+            return FormatDetection(
+                None,
+                (
+                    _issue(
+                        "error",
+                        "format.unsupported",
+                        "$",
+                        "Could not identify this file format. Supported formats: PlanForge JSON (.json), CSV (.csv), Microsoft Project / ProjectLibre XML (.xml), and GanttProject (.gan).",
+                    ),
+                ),
+            )
+
         detected_format = self.get(detected)
         if detected_format is None:
-            return FormatDetection(None, (_issue("error", "format.unregistered", "$", f"Detected format {detected!r} is not registered."),))
+            return FormatDetection(
+                None,
+                (_issue("error", "format.unregistered", "$", f"Detected format {detected!r} is not registered."),),
+            )
         if suffix and suffix not in detected_format.extensions:
-            issues.append(_issue(
-                "warning", "format.extension.mismatch", "$",
-                f"File content looks like {detected_format.name}, although its extension is {suffix!r}.",
-            ))
+            issues.append(
+                _issue(
+                    "warning",
+                    "format.extension.mismatch",
+                    "$",
+                    f"File content looks like {detected_format.name}, although its extension is {suffix!r}.",
+                )
+            )
         return FormatDetection(detected, tuple(issues))
 
 
@@ -236,7 +382,11 @@ class InterchangeManager:
         except OSError as exc:
             return ImportResult(format_id or "unknown", None, (_issue("error", "file.read.failed", str(source), str(exc)),))
         if len(data) > MAX_FILE_BYTES:
-            return ImportResult(format_id or "unknown", None, (_issue("error", "file.too_large", str(source), f"File exceeds the {MAX_FILE_BYTES}-byte import limit."),))
+            return ImportResult(
+                format_id or "unknown",
+                None,
+                (_issue("error", "file.too_large", str(source), f"File exceeds the {MAX_FILE_BYTES}-byte import limit."),),
+            )
 
         detection = self.registry.detect(data, source)
         selected = format_id or detection.format_id
@@ -245,15 +395,23 @@ class InterchangeManager:
         definition = self.registry.get(selected)
         importer = self.registry.importer(selected)
         if definition is None or not definition.can_import or importer is None:
-            return ImportResult(selected, None, (_issue("error", "format.import.unsupported", str(source), f"Format {selected!r} is not available for import in this build."),))
+            return ImportResult(
+                selected,
+                None,
+                (_issue("error", "format.import.unsupported", str(source), f"Format {selected!r} is not available for import in this build."),),
+            )
 
         result = importer(data, source_name=source.name, csv_options=csv_options)
         extra = list(detection.issues) if format_id is None or detection.format_id is not None else []
         if format_id is not None and detection.format_id is not None and detection.format_id != format_id:
-            extra.append(_issue(
-                "warning", "format.forced", str(source),
-                f"The file was parsed as {definition.name} because that format was explicitly selected; content detection suggested {detection.format_id}.",
-            ))
+            extra.append(
+                _issue(
+                    "warning",
+                    "format.forced",
+                    str(source),
+                    f"The file was parsed as {definition.name} because that format was explicitly selected; content detection suggested {detection.format_id}.",
+                )
+            )
         return ImportResult(result.source_format, result.project, tuple(extra) + result.issues, result.schema_version)
 
     def export_file(
@@ -269,34 +427,76 @@ class InterchangeManager:
         definition = self.registry.get(format_id)
         exporter = self.registry.exporter(format_id)
         if definition is None or not definition.can_export or exporter is None:
-            return ExportResult(format_id, None, (_issue("error", "format.export.unsupported", str(destination), f"Format {format_id!r} is not available for export in this build."),))
+            return ExportResult(
+                format_id,
+                None,
+                (_issue("error", "format.export.unsupported", str(destination), f"Format {format_id!r} is not available for export in this build."),),
+            )
         result = exporter(project, spreadsheet_safe=spreadsheet_safe)
         if not result.success or result.data is None:
             return result
 
-        # Validate output through its own registered importer. This proves the
-        # adapter can read the generated bytes; it does not prove compatibility
-        # with an external desktop application.
+        # Validate output through its own registered importer.
         importer = self.registry.importer(format_id)
         if importer is None:
-            return ExportResult(format_id, None, result.issues + (_issue(
-                "error", "export.validation.unavailable", str(destination),
-                "No importer is registered to validate this generated output.",
-            ),))
+            return ExportResult(
+                format_id,
+                None,
+                result.issues
+                + (
+                    _issue(
+                        "error",
+                        "export.validation.unavailable",
+                        str(destination),
+                        "No importer is registered to validate this generated output.",
+                    ),
+                ),
+            )
         check = importer(result.data, source_name=destination.name)
         if not check.success:
             details = "; ".join(issue.message for issue in check.errors)
-            return ExportResult(format_id, None, result.issues + (_issue(
-                "error", "export.validation.failed", str(destination),
-                f"Generated output did not pass its importer validation: {details}",
-            ),))
+            return ExportResult(
+                format_id,
+                None,
+                result.issues
+                + (
+                    _issue(
+                        "error",
+                        "export.validation.failed",
+                        str(destination),
+                        f"Generated output did not pass its importer validation: {details}",
+                    ),
+                ),
+            )
 
         if destination.exists() and not overwrite:
-            return ExportResult(format_id, None, result.issues + (_issue(
-                "error", "file.exists", str(destination), "Destination already exists; pass overwrite=True only after explicit confirmation."),))
+            return ExportResult(
+                format_id,
+                None,
+                result.issues
+                + (
+                    _issue(
+                        "error",
+                        "file.exists",
+                        str(destination),
+                        "Destination already exists; pass overwrite=True only after explicit confirmation.",
+                    ),
+                ),
+            )
         if not destination.parent.exists() or not destination.parent.is_dir():
-            return ExportResult(format_id, None, result.issues + (_issue(
-                "error", "file.destination.invalid", str(destination.parent), "Destination folder does not exist."),))
+            return ExportResult(
+                format_id,
+                None,
+                result.issues
+                + (
+                    _issue(
+                        "error",
+                        "file.destination.invalid",
+                        str(destination.parent),
+                        "Destination folder does not exist.",
+                    ),
+                ),
+            )
 
         temporary_name: str | None = None
         try:
@@ -314,14 +514,16 @@ class InterchangeManager:
             if overwrite:
                 os.replace(temporary_name, destination)
             else:
-                # Linking a same-directory temporary file is atomic and fails
-                # if another process created the destination meanwhile.
                 os.link(temporary_name, destination)
                 os.unlink(temporary_name)
             temporary_name = None
         except OSError as exc:
-            return ExportResult(format_id, None, result.issues + (_issue(
-                "error", "file.write.failed", str(destination), f"Export was not saved: {exc}"),))
+            return ExportResult(
+                format_id,
+                None,
+                result.issues
+                + (_issue("error", "file.write.failed", str(destination), f"Export was not saved: {exc}"),),
+            )
         finally:
             if temporary_name is not None:
                 try:
