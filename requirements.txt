@@ -1,0 +1,15 @@
+# PlanForge runtime dependencies
+#
+# PlanForge itself uses only the Python standard library at runtime; the
+# desktop window is built with Tkinter, which ships with the python.org
+# installers on Windows and macOS and is installed as a system package on
+# many Linux distributions (for example "sudo apt install python3-tk" on
+# Debian/Ubuntu or "sudo pacman -S tk" on Arch Linux). Tkinter cannot be
+# installed with pip, so the launcher checks for it and explains the system
+# package to install if it is missing.
+#
+# This file is the single source of truth for third-party packages. Add
+# runtime dependencies here (preferably pinned or bounded, for example
+# "packaging>=23,<25") and PlanForgeLauncher.py will install them into .venv. Keep
+# lines commented out or remove them when there are no dependencies; the
+# launcher treats a comment-only file as "nothing to install".

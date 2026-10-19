@@ -1,2 +1,7 @@
 __pycache__/
 *.py[cod]
+
+# Launcher-managed virtual environment, logs and setup lock
+.venv/
+logs/
+.planforge-setup.lock

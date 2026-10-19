@@ -8,6 +8,22 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ---
 
+## Start Here
+
+| System | Launch PlanForge |
+| --- | --- |
+| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
+| **Linux** | Run **`./PlanForgeLauncher.sh`** |
+| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
+| **Any system** | `python PlanForgeLauncher.py` (or `python3`) |
+
+The launcher detects your operating system, prepares a project-local `.venv`,
+installs any declared dependencies and starts the application. The older
+`run.bat`, `run.sh` and `run.command` files are kept as compatibility wrappers
+and do the same thing.
+
+---
+
 ## Key Features
 
 - **Interoperability Across Standard Formats:**
@@ -44,21 +60,40 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ### 1. Launch the Application
 
-PlanForge runs on Python 3.10+ without any third-party library dependencies. The window uses Tkinter, which ships with most Python installers:
+Use the launcher for your system from [Start Here](#start-here). It detects the
+operating system, finds Python 3.10+, creates a project-local `.venv`, installs
+any dependencies declared in `requirements.txt` and starts PlanForge. No
+packages are installed globally and no administrator rights are needed.
 
-- **Windows and macOS:** the python.org installer includes Tk.
+On Windows the launcher normally uses `pythonw.exe`, so there is no console
+window during use; first-time setup reports progress in a small window and
+errors appear in dialogs. Projects can be passed through, for example
+`PlanForgeLauncher.bat my_project.pfp` or `./PlanForgeLauncher.sh my_project.pfp`.
+
+Check the environment without changing anything:
+
+```bash
+./PlanForgeLauncher.sh --check          # Linux/macOS
+PlanForgeLauncher.bat --check           # Windows
+```
+
+If Python or Tkinter is missing, the launcher prints the exact package or
+installer to use. See [`docs/launcher.md`](docs/launcher.md) for per-platform
+instructions, exit codes, logs and troubleshooting.
+
+PlanForge itself runs on Python 3.10+ without any third-party library
+dependencies. The window uses Tkinter, which ships with the python.org
+installers on Windows and macOS and is a system package on Linux:
+
 - **Debian and Ubuntu:** `sudo apt install python3-tk`
+- **Arch Linux:** `sudo pacman -S tk`
 - **Fedora:** `sudo dnf install python3-tkinter`
 
-Start the application:
+If you already manage your own Python environment, the original entry points
+continue to work:
 
 ```bash
 ./bin/planforge
-```
-
-or via the Python module:
-
-```bash
 python3 -m planforge
 ```
 
@@ -135,9 +170,18 @@ Existing Software (Reopen and continue)
 
 ```
 PlanForge/
+├── PlanForgeLauncher.py        # Universal OS detection, .venv setup and startup
+├── PlanForgeLauncher.bat       # Windows double-click entry point
+├── PlanForgeLauncher.sh        # Linux/macOS entry point
+├── PlanForgeLauncher.command   # macOS Finder entry point
+├── run.bat                     # Compatibility wrapper for PlanForgeLauncher.bat
+├── run.sh                      # Compatibility wrapper for PlanForgeLauncher.sh
+├── run.command                 # Compatibility wrapper for PlanForgeLauncher.command
+├── requirements.txt            # Runtime dependency manifest (stdlib-only today)
 ├── bin/
-│   └── planforge               # Executable application launcher
+│   └── planforge               # Manual entry point for existing environments
 ├── docs/
+│   ├── launcher.md             # Launcher guide, platform notes and exit codes
 │   └── interoperability.md     # Detailed interoperability specifications
 ├── function-point-calculator/  # Integrated Simple Function Point Calculator
 │   └── function-point-calculator-main/
@@ -174,6 +218,7 @@ PlanForge/
 │   └── planforge-project-v1.schema.json # JSON Schema Draft 2020-12
 └── tests/
     ├── fixtures/               # Real project file fixtures (.xml, .gan, .json)
+    ├── test_launcher.py        # Launcher platform, venv, locking, path and startup tests
     ├── test_interchange.py     # Comprehensive adapter & round-trip tests
     ├── test_session.py         # Workflow tests for projects, tasks, people, estimates, files (no display needed)
     └── test_gui.py             # Window smoke tests (skipped unless Tk and a display are available)
