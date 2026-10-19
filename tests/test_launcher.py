@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import launcher
+import PlanForgeLauncher as launcher
 
 REPO_ROOT = Path(launcher.__file__).resolve().parent
 POSIX = os.name == "posix"
@@ -903,8 +903,8 @@ print("fake application ok")
 def build_fake_root(base: Path, name: str = "Plan Forge Tëst") -> Path:
     root = base / name
     root.mkdir()
-    shutil.copy2(REPO_ROOT / "launcher.py", root / "launcher.py")
-    shutil.copy2(REPO_ROOT / "run.sh", root / "run.sh")
+    shutil.copy2(REPO_ROOT / "PlanForgeLauncher.py", root / "PlanForgeLauncher.py")
+    shutil.copy2(REPO_ROOT / "PlanForgeLauncher.sh", root / "PlanForgeLauncher.sh")
     (root / "requirements.txt").write_text("# no third-party dependencies\n", encoding="utf-8")
     package = root / "planforge"
     package.mkdir()
@@ -935,7 +935,7 @@ class FakeAppTestCase(unittest.TestCase):
         environment = os.environ.copy()
         environment.update(env or {})
         return subprocess.run(
-            [sys.executable, str(self.root / "launcher.py"), *args],
+            [sys.executable, str(self.root / "PlanForgeLauncher.py"), *args],
             cwd=str(cwd if cwd is not None else self.base),
             env=environment,
             capture_output=True,
@@ -1032,7 +1032,7 @@ class FirstLaunchTests(FakeAppTestCase):
         self.assertFalse((self.root / ".planforge-setup.lock").exists())
 
     @unittest.skipUnless(POSIX, "POSIX shell required")
-    def test_07_run_sh_launches_from_another_directory(self) -> None:
+    def test_07_planforge_launcher_sh_launches_from_another_directory(self) -> None:
         self.ensure_environment()
         elsewhere = self.base / "run sh cwd"
         elsewhere.mkdir(exist_ok=True)
@@ -1040,7 +1040,7 @@ class FirstLaunchTests(FakeAppTestCase):
         environment = os.environ.copy()
         environment["PLANFORGE_FAKE_RECORD"] = str(record)
         completed = subprocess.run(
-            ["/bin/sh", str(self.root / "run.sh"), "--import-file", "shell input.xml"],
+            ["/bin/sh", str(self.root / "PlanForgeLauncher.sh"), "--import-file", "shell input.xml"],
             cwd=str(elsewhere),
             env=environment,
             capture_output=True,
@@ -1077,7 +1077,7 @@ class ApplicationFailureTests(FakeAppTestCase):
     def setUpClass(cls) -> None:
         cls.build_root("planforge app failure ")
         completed = subprocess.run(
-            [sys.executable, str(cls.root / "launcher.py"), "--import-file", "setup.xml"],
+            [sys.executable, str(cls.root / "PlanForgeLauncher.py"), "--import-file", "setup.xml"],
             cwd=str(cls.base),
             capture_output=True,
             text=True,
@@ -1143,41 +1143,41 @@ class DependencyFailureTests(FakeAppTestCase):
 
 
 class WrapperScriptTests(unittest.TestCase):
-    def test_run_sh_is_executable_and_delegates_only(self) -> None:
-        script = REPO_ROOT / "run.sh"
+    def test_planforge_launcher_sh_is_executable_and_delegates_only(self) -> None:
+        script = REPO_ROOT / "PlanForgeLauncher.sh"
         if POSIX:
             self.assertTrue(os.access(script, os.X_OK))
         text = script.read_text(encoding="utf-8")
-        self.assertIn("launcher.py", text)
+        self.assertIn("PlanForgeLauncher.py", text)
         self.assertNotIn("pip install", text)
         self.assertNotIn("-m venv", text)
         self.assertNotIn(".venv", text)
-        self.assertIn("run.bat", text)
+        self.assertIn("PlanForgeLauncher.bat", text)
 
     @unittest.skipUnless(POSIX, "POSIX shell required")
-    def test_run_sh_rejects_windows(self) -> None:
+    def test_planforge_launcher_sh_rejects_windows(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             shim = Path(temp) / "uname"
             shim.write_text("#!/bin/sh\necho MINGW64_NT-10.0\n", encoding="utf-8")
             shim.chmod(0o755)
             completed = subprocess.run(
-                ["/bin/sh", str(REPO_ROOT / "run.sh")],
+                ["/bin/sh", str(REPO_ROOT / "PlanForgeLauncher.sh")],
                 env={"PATH": temp},
                 capture_output=True,
                 text=True,
                 timeout=30,
             )
         self.assertEqual(completed.returncode, 1)
-        self.assertIn("run.bat", completed.stderr)
+        self.assertIn("PlanForgeLauncher.bat", completed.stderr)
 
     @unittest.skipUnless(POSIX, "POSIX shell required")
-    def test_run_sh_without_python_gives_install_help(self) -> None:
+    def test_planforge_launcher_sh_without_python_gives_install_help(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             shim = Path(temp) / "uname"
             shim.write_text("#!/bin/sh\necho Linux\n", encoding="utf-8")
             shim.chmod(0o755)
             completed = subprocess.run(
-                ["/bin/sh", str(REPO_ROOT / "run.sh")],
+                ["/bin/sh", str(REPO_ROOT / "PlanForgeLauncher.sh")],
                 env={"PATH": temp},
                 capture_output=True,
                 text=True,
@@ -1188,8 +1188,13 @@ class WrapperScriptTests(unittest.TestCase):
         self.assertIn("apt", completed.stderr)
 
     @unittest.skipUnless(POSIX, "POSIX shell required")
-    def test_run_sh_and_command_have_valid_shell_syntax(self) -> None:
-        for name in ("run.sh", "run.command"):
+    def test_all_shell_wrappers_have_valid_syntax(self) -> None:
+        for name in (
+            "PlanForgeLauncher.sh",
+            "PlanForgeLauncher.command",
+            "run.sh",
+            "run.command",
+        ):
             completed = subprocess.run(
                 ["/bin/sh", "-n", str(REPO_ROOT / name)],
                 capture_output=True,
@@ -1198,23 +1203,38 @@ class WrapperScriptTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def test_run_bat_is_crlf_and_delegates_only(self) -> None:
-        data = (REPO_ROOT / "run.bat").read_bytes()
+    def test_planforge_launcher_bat_is_crlf_and_delegates_only(self) -> None:
+        data = (REPO_ROOT / "PlanForgeLauncher.bat").read_bytes()
         self.assertIn(b"\r\n", data)
-        self.assertEqual(data.count(b"\n"), data.count(b"\r\n"), "run.bat must use CRLF")
+        self.assertEqual(
+            data.count(b"\n"), data.count(b"\r\n"), "PlanForgeLauncher.bat must use CRLF"
+        )
         text = data.decode("ascii")
-        self.assertIn("launcher.py", text)
+        self.assertIn("PlanForgeLauncher.py", text)
         self.assertIn("py -3", text)
         self.assertIn("start", text)
         self.assertNotIn("pip install", text)
         self.assertNotIn("sudo", text)
 
+    def test_compatibility_wrappers_delegate_to_canonical_launchers(self) -> None:
+        bat = (REPO_ROOT / "run.bat").read_bytes()
+        self.assertEqual(bat.count(b"\n"), bat.count(b"\r\n"), "run.bat must use CRLF")
+        self.assertIn("PlanForgeLauncher.bat", bat.decode("ascii"))
+
+        sh = (REPO_ROOT / "run.sh").read_text(encoding="utf-8")
+        self.assertIn("PlanForgeLauncher.sh", sh)
+        self.assertIn("exec", sh)
+
+        command = (REPO_ROOT / "run.command").read_text(encoding="utf-8")
+        self.assertIn("PlanForgeLauncher.command", command)
+        self.assertIn("exec", command)
+
     def test_macos_command_wrapper_delegates(self) -> None:
-        script = REPO_ROOT / "run.command"
+        script = REPO_ROOT / "PlanForgeLauncher.command"
         if POSIX:
             self.assertTrue(os.access(script, os.X_OK))
         text = script.read_text(encoding="utf-8")
-        self.assertIn("run.sh", text)
+        self.assertIn("PlanForgeLauncher.sh", text)
         self.assertIn("exec", text)
 
 
@@ -1254,7 +1274,8 @@ class HelperTests(unittest.TestCase):
         options = launcher.parse_options(["--help"])
         self.assertTrue(options.help)
         self.assertIn("--check", launcher.HELP_TEXT)
-        self.assertIn("run.bat", launcher.HELP_TEXT)
+        self.assertIn("PlanForgeLauncher.bat", launcher.HELP_TEXT)
+        self.assertIn("PlanForgeLauncher.py", launcher.HELP_TEXT)
 
 
 if __name__ == "__main__":

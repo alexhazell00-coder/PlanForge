@@ -1,10 +1,16 @@
-# PlanForge Universal Launcher
+# PlanForgeLauncher — Universal Launcher
 
 The launcher lets a user start PlanForge without installing Python packages,
 activating environments or remembering the correct startup command. It detects
 the operating system, finds a compatible Python interpreter, prepares a
 project-local `.venv`, checks the declared dependencies and then starts the
 real application.
+
+The canonical launcher is **`PlanForgeLauncher`**. On Windows use
+`PlanForgeLauncher.bat`, on Linux/macOS use `PlanForgeLauncher.sh`, and on
+macOS Finder use `PlanForgeLauncher.command`. The older `run.bat`, `run.sh` and
+`run.command` names remain as thin compatibility wrappers for existing
+instructions and shortcuts.
 
 The launcher does **not** modify the PlanForge application, its UI or its data.
 It only reads `requirements.txt`, writes `.venv/`, `logs/` and a short-lived
@@ -16,11 +22,11 @@ setup lock, and runs `python -m planforge` from the installation directory.
 
 | System | Normal launch | Command-line use |
 | --- | --- | --- |
-| Windows 10/11 | Double-click **`run.bat`** | `run.bat --check` |
-| Linux | `./run.sh` | `./run.sh --check` |
-| macOS (Terminal) | `./run.sh` | `./run.sh --check` |
-| macOS (Finder) | Double-click **`run.command`** | `./run.command --check` |
-| Any system | `python3 launcher.py` | `python3 launcher.py --check` |
+| Windows 10/11 | Double-click **`PlanForgeLauncher.bat`** | `PlanForgeLauncher.bat --check` |
+| Linux | `./PlanForgeLauncher.sh` | `./PlanForgeLauncher.sh --check` |
+| macOS (Terminal) | `./PlanForgeLauncher.sh` | `./PlanForgeLauncher.sh --check` |
+| macOS (Finder) | Double-click **`PlanForgeLauncher.command`** | `./PlanForgeLauncher.command --check` |
+| Any system | `python3 PlanForgeLauncher.py` | `python3 PlanForgeLauncher.py --check` |
 
 Double-clicking with no arguments starts the desktop application. Any argument
 is treated as a command-line session, so output stays in the console.
@@ -34,39 +40,39 @@ always runs with the PlanForge installation directory as its working directory.
 1. Install Python 3.10 or newer from
    <https://www.python.org/downloads/windows/>. Tick **Add python.exe to PATH**
    and leave **tcl/tk and IDLE** enabled.
-2. Double-click `run.bat`.
+2. Double-click `PlanForgeLauncher.bat`.
 
-`run.bat` uses the Python launcher (`py -3`) when available, otherwise
+`PlanForgeLauncher.bat` uses the Python launcher (`py -3`) when available, otherwise
 `python` from `PATH`. It starts the launcher through `pythonw.exe`, so no
 console window appears during normal use. On the first launch a small setup
 window reports progress, and errors are shown in a Windows dialog (or a Tk
 window when Tkinter is available). No administrator rights are requested.
 
-If Windows SmartScreen warns about `run.bat`, choose **More info → Run anyway**.
+If Windows SmartScreen warns about `PlanForgeLauncher.bat`, choose **More info → Run anyway**.
 The script is plain text; it does not download or execute installers.
 
 For diagnostics, open Command Prompt in the PlanForge folder and run:
 
 ```bat
-run.bat --check
-run.bat --import-file schedule.xml --export-file schedule.gan --export-format ganttproject
+PlanForgeLauncher.bat --check
+PlanForgeLauncher.bat --import-file schedule.xml --export-file schedule.gan --export-format ganttproject
 ```
 
 ### Linux
 
 ```bash
 cd PlanForge
-./run.sh
+./PlanForgeLauncher.sh
 ```
 
 If the archive lost the executable bit:
 
 ```bash
-chmod +x run.sh launcher.py
+chmod +x PlanForgeLauncher.sh PlanForgeLauncher.py
 ```
 
-`run.sh` checks that it is running on Linux or macOS and then delegates to
-`launcher.py`. It never runs `sudo`, never edits system Python and never
+`PlanForgeLauncher.sh` checks that it is running on Linux or macOS and then delegates to
+`PlanForgeLauncher.py`. It never runs `sudo`, never edits system Python and never
 installs operating-system packages. If Tkinter is missing, it prints the exact
 package command for your distribution and stops.
 
@@ -87,9 +93,9 @@ rather than doing it. PlanForge itself never needs root.
 
 ### macOS
 
-- **Finder:** double-click `run.command`. Terminal opens, runs `run.sh`, and
+- **Finder:** double-click `PlanForgeLauncher.command`. Terminal opens, runs `PlanForgeLauncher.sh`, and
   stays open so diagnostics remain visible.
-- **Terminal:** `./run.sh` or `python3 launcher.py`.
+- **Terminal:** `./PlanForgeLauncher.sh` or `python3 PlanForgeLauncher.py`.
 
 Python from **python.org** includes Tkinter and is the recommended choice.
 Homebrew Python needs the matching Tk package:
@@ -101,7 +107,7 @@ brew install python-tk@3.13   # use the version reported by python3 --version
 macOS support depends on the installed Python/Tk combination. If Tk is absent
 or incompatible, the launcher reports the exact problem instead of failing at
 window creation. Downloaded `.command` files may be quarantined by Gatekeeper;
-if macOS refuses to run it, right-click → **Open**, or run `./run.sh` from
+if macOS refuses to run it, right-click → **Open**, or run `./PlanForgeLauncher.sh` from
 Terminal.
 
 ---
@@ -165,7 +171,7 @@ error dialog shows the log path in use.
 ## Options and exit codes
 
 ```text
-python launcher.py [launcher options] [--] [PlanForge arguments]
+python PlanForgeLauncher.py [launcher options] [--] [PlanForge arguments]
 
   --check           Check the environment without changing anything
   --setup           Prepare .venv and dependencies, then exit
@@ -180,9 +186,9 @@ python launcher.py [launcher options] [--] [PlanForge arguments]
 Arguments not understood by the launcher are passed to PlanForge:
 
 ```bash
-./run.sh my_project.pfp
-./run.sh --import-file schedule.xml --export-file schedule.gan --export-format ganttproject
-./run.sh --import-file schedule.gan
+./PlanForgeLauncher.sh my_project.pfp
+./PlanForgeLauncher.sh --import-file schedule.xml --export-file schedule.gan --export-format ganttproject
+./PlanForgeLauncher.sh --import-file schedule.gan
 ```
 
 ### Exit codes
@@ -260,7 +266,7 @@ rights; it reports the exact package command for the detected distribution.
 | Window does not appear on Linux | Start from a desktop session; Tk needs `DISPLAY` or Wayland |
 | Windows blocks `.venv` creation | Allow the PlanForge folder in antivirus / Controlled Folder Access |
 
-Run `./run.sh --check` (or `run.bat --check`) for a full, read-only report. Use
+Run `./PlanForgeLauncher.sh --check` (or `PlanForgeLauncher.bat --check`) for a full, read-only report. Use
 `--recreate-venv` if you changed Python installations and want PlanForge to
 rebuild `.venv` with the new interpreter.
 
@@ -272,10 +278,10 @@ The launcher was developed and tested in the following environment:
 
 - **Linux:** Debian GNU/Linux 12 (bookworm), x86_64, CPython 3.11.2, no Tkinter
   and no display in the sandbox.
-- **Automated tests:** `python3 -m unittest discover tests -v` → 140 tests pass,
+- **Automated tests:** `python3 -m unittest discover tests -v` → 141 tests pass,
   4 existing Tk GUI tests skipped because the sandbox has no Tk/display.
-  This includes 68 new launcher tests in `tests/test_launcher.py`.
-- **Real application:** `run.sh --import-file tests/fixtures/sample_projectlibre.xml`
+  This includes 69 new launcher tests in `tests/test_launcher.py`.
+- **Real application:** `PlanForgeLauncher.sh --import-file tests/fixtures/sample_projectlibre.xml`
   created `.venv` on first launch, converted the fixture correctly, and reused
   the environment on subsequent launches.
 - **Missing Tkinter:** `--check`, `--setup` and a normal GUI launch exit 15 with
@@ -297,9 +303,10 @@ The launcher was developed and tested in the following environment:
   `--check`, repeated launches and `--recreate-venv`.
 - **Concurrency:** lock acquisition, timeout, stale-lock takeover and release
   after exceptions are unit-tested.
-- **Wrapper scripts:** `run.sh` and `run.command` pass POSIX syntax checks;
-  `run.sh` was executed with a Windows `uname` shim (helpful message, exit 1)
-  and with no Python on `PATH` (install guidance, exit 127). `run.bat` is
+- **Wrapper scripts:** `PlanForgeLauncher.sh`, `PlanForgeLauncher.command` and the
+  `run.*` compatibility wrappers pass POSIX syntax checks;
+  `PlanForgeLauncher.sh` was executed with a Windows `uname` shim (helpful message, exit 1)
+  and with no Python on `PATH` (install guidance, exit 127). `PlanForgeLauncher.bat` is
   statically checked for CRLF and delegation but cannot be executed here.
 
 ### Not yet verified on real hardware
@@ -308,10 +315,10 @@ This development environment is Linux-only and has no Tkinter. The following
 must be validated before Windows and macOS support is described as fully
 verified:
 
-- Double-clicking `run.bat` on Windows 10 and 11 (including pythonw behaviour,
+- Double-clicking `PlanForgeLauncher.bat` on Windows 10 and 11 (including pythonw behaviour,
   first-run setup window and error dialogs).
 - Installing/repairing Python and Tkinter on Windows.
-- Double-clicking `run.command` on macOS, Gatekeeper quarantine behaviour, and
+- Double-clicking `PlanForgeLauncher.command` on macOS, Gatekeeper quarantine behaviour, and
   python.org vs Homebrew Tkinter combinations.
 - Opening the actual Tk window on any platform (the existing 4 GUI tests were
   skipped for the same reason).
@@ -332,7 +339,7 @@ platform data, but simulation is not a substitute for running on the target OS.
 - **Windows scripts are unsigned.** SmartScreen may show a warning; no code
   signing certificate is configured in this repository.
 - **macOS may quarantine downloaded scripts.** Use right-click → Open or run
-  `./run.sh` from Terminal. Tk compatibility depends on the Python build.
+  `./PlanForgeLauncher.sh` from Terminal. Tk compatibility depends on the Python build.
 - **Setup is single-instance; the application is not.** The lock prevents two
   setups from corrupting `.venv`, but two rapid double-clicks can still open
   two PlanForge windows after setup completes.
@@ -358,7 +365,7 @@ system; one binary cannot cover all platforms.
 | **py2app** | MIT | Native macOS `.app` bundles | macOS only |
 | **pynsist** | BSD | MSI installers for Windows | Windows only; bundles its own Python |
 
-Recommendation: keep `launcher.py` as the supported entry point, then add
+Recommendation: keep `PlanForgeLauncher.py` as the supported entry point, then add
 PyInstaller `--onedir` builds in CI on `windows-latest`, `ubuntu-latest` and
 `macos-14`. Sign Windows builds and notarise macOS builds before public
 distribution, and publish separate artefacts per OS. No standalone artefacts
@@ -372,13 +379,16 @@ requirement.
 
 ```
 PlanForge/
-├── launcher.py            Shared OS detection, environment, logging, startup
-├── run.bat                Windows double-click entry point
-├── run.sh                 Linux/macOS entry point
-├── run.command            macOS Finder entry point
-├── requirements.txt       Runtime dependency manifest (no third-party deps today)
-├── docs/launcher.md       This document
-└── tests/test_launcher.py Automated launcher tests
+├── PlanForgeLauncher.py        Shared OS detection, environment, logging, startup
+├── PlanForgeLauncher.bat       Windows double-click entry point
+├── PlanForgeLauncher.sh        Linux/macOS entry point
+├── PlanForgeLauncher.command   macOS Finder entry point
+├── run.bat                     Compatibility wrapper for older instructions
+├── run.sh                      Compatibility wrapper for older instructions
+├── run.command                 Compatibility wrapper for older instructions
+├── requirements.txt            Runtime dependency manifest (no third-party deps today)
+├── docs/launcher.md            This document
+└── tests/test_launcher.py      Automated launcher tests
 ```
 
 `bin/planforge` and `python -m planforge` continue to work unchanged for users

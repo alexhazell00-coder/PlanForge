@@ -8,6 +8,22 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ---
 
+## Start Here
+
+| System | Launch PlanForge |
+| --- | --- |
+| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
+| **Linux** | Run **`./PlanForgeLauncher.sh`** |
+| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
+| **Any system** | `python3 PlanForgeLauncher.py` |
+
+The launcher detects your operating system, prepares a project-local `.venv`,
+installs any declared dependencies and starts the application. The older
+`run.bat`, `run.sh` and `run.command` files are kept as compatibility wrappers
+and do the same thing.
+
+---
+
 ## Key Features
 
 - **Interoperability Across Standard Formats:**
@@ -51,21 +67,21 @@ are installed globally and no administrator rights are needed.
 
 | System | Launch |
 | --- | --- |
-| **Windows 10/11** | Double-click **`run.bat`** |
-| **Linux** | `./run.sh` |
-| **macOS** | Double-click **`run.command`**, or run `./run.sh` |
-| **Any system** | `python3 launcher.py` |
+| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
+| **Linux** | `./PlanForgeLauncher.sh` |
+| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
+| **Any system** | `python3 PlanForgeLauncher.py` |
 
 On Windows the launcher normally uses `pythonw.exe`, so there is no console
 window during use; first-time setup reports progress in a small window and
 errors appear in dialogs. Projects can be passed through, for example
-`run.bat my_project.pfp` or `./run.sh my_project.pfp`.
+`PlanForgeLauncher.bat my_project.pfp` or `./PlanForgeLauncher.sh my_project.pfp`.
 
 Check the environment without changing anything:
 
 ```bash
-./run.sh --check          # Linux/macOS
-run.bat --check           # Windows
+./PlanForgeLauncher.sh --check          # Linux/macOS
+PlanForgeLauncher.bat --check           # Windows
 ```
 
 If Python or Tkinter is missing, the launcher prints the exact package or
@@ -161,10 +177,13 @@ Existing Software (Reopen and continue)
 
 ```
 PlanForge/
-├── launcher.py                 # Universal OS detection, .venv setup and startup
-├── run.bat                     # Windows double-click entry point
-├── run.sh                      # Linux/macOS entry point
-├── run.command                 # macOS Finder entry point
+├── PlanForgeLauncher.py        # Universal OS detection, .venv setup and startup
+├── PlanForgeLauncher.bat       # Windows double-click entry point
+├── PlanForgeLauncher.sh        # Linux/macOS entry point
+├── PlanForgeLauncher.command   # macOS Finder entry point
+├── run.bat                     # Compatibility wrapper for PlanForgeLauncher.bat
+├── run.sh                      # Compatibility wrapper for PlanForgeLauncher.sh
+├── run.command                 # Compatibility wrapper for PlanForgeLauncher.command
 ├── requirements.txt            # Runtime dependency manifest (stdlib-only today)
 ├── bin/
 │   └── planforge               # Manual entry point for existing environments

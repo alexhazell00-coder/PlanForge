@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""PlanForge universal launcher.
+"""PlanForgeLauncher - PlanForge universal launcher.
 
 This file is the single, shared startup path for every supported platform.
-The small platform wrappers (``run.bat``, ``run.sh`` and ``run.command``) only
+The small platform wrappers (``PlanForgeLauncher.bat``,
+``PlanForgeLauncher.sh`` and ``PlanForgeLauncher.command``) only
 locate a Python interpreter and call this script; all environment management,
 dependency installation, logging and error reporting lives here.
 
@@ -630,15 +631,15 @@ def python_install_hints(platform_info: PlatformInfo) -> list[str]:
             "Install Python 3.10 or newer from https://www.python.org/downloads/windows/",
             "During installation tick 'Add python.exe to PATH'.",
             "If typing 'python' opens the Microsoft Store, install Python from python.org instead.",
-            "Then run run.bat again.",
+            "Then run PlanForgeLauncher.bat again.",
         ]
     if platform_info.is_macos:
         return [
             "Install Python 3.10+ from https://www.python.org/downloads/macos/ (Tkinter is included).",
             "Or, with Homebrew: brew install python",
-            "Then run run.sh again.",
+            "Then run PlanForgeLauncher.sh again.",
         ]
-    return _linux_install_hints(platform_info) + ["Then run run.sh again."]
+    return _linux_install_hints(platform_info) + ["Then run PlanForgeLauncher.sh again."]
 
 
 def python_upgrade_hints(platform_info: PlatformInfo) -> list[str]:
@@ -646,12 +647,12 @@ def python_upgrade_hints(platform_info: PlatformInfo) -> list[str]:
         return [
             "Install Python 3.10+ from https://www.python.org/downloads/windows/",
             "If several versions are installed, the launcher automatically uses the newest one.",
-            "Then run run.bat again.",
+            "Then run PlanForgeLauncher.bat again.",
         ]
     if platform_info.is_macos:
         return [
             "Install Python 3.10+ from python.org or with Homebrew: brew install python",
-            "Then run run.sh again.",
+            "Then run PlanForgeLauncher.sh again.",
         ]
     return [
         "Install Python 3.10 or newer with your package manager.",
@@ -664,14 +665,14 @@ def tkinter_hints(platform_info: PlatformInfo) -> list[str]:
         return [
             "Re-run the Python installer from python.org, choose Modify, and enable 'tcl/tk and IDLE'.",
             "The Microsoft Store build of Python normally includes Tkinter.",
-            "After repairing Python, run: python launcher.py --recreate-venv",
+            "After repairing Python, run: python PlanForgeLauncher.py --recreate-venv",
         ]
     if platform_info.is_macos:
         return [
             "Install Python from python.org (its installer includes Tkinter).",
             "With Homebrew, install the matching Tk package, for example:",
             "  brew install python-tk@3.13   # match 'python3 --version'",
-            "After changing Python installations, run: python3 launcher.py --recreate-venv",
+            "After changing Python installations, run: python3 PlanForgeLauncher.py --recreate-venv",
         ]
     manager = platform_info.package_manager
     mapping = {
@@ -692,7 +693,7 @@ def tkinter_hints(platform_info: PlatformInfo) -> list[str]:
         [
             "Tkinter is a system package and cannot be installed with pip.",
             "PlanForge does not run sudo or change system packages for you.",
-            "If you switched to a different Python installation, run: python3 launcher.py --recreate-venv",
+            "If you switched to a different Python installation, run: python3 PlanForgeLauncher.py --recreate-venv",
         ]
     )
     return hints
@@ -701,7 +702,7 @@ def tkinter_hints(platform_info: PlatformInfo) -> list[str]:
 def venv_failure_hints(platform_info: PlatformInfo) -> list[str]:
     hints = _linux_install_hints(platform_info)
     hints.append(
-        "Make sure the PlanForge folder is writable; the environment is created in .venv next to launcher.py."
+        "Make sure the PlanForge folder is writable; the environment is created in .venv next to PlanForgeLauncher.py."
     )
     if platform_info.is_windows:
         hints.append(
@@ -1926,7 +1927,7 @@ def _dependency_label(report: DependencyReport | None) -> str:
 
 def format_environment_report(report: EnvironmentReport) -> str:
     lines = [
-        f"{APP_NAME} launcher check",
+        f"{APP_NAME}Launcher check",
         f"  Platform        : {report.platform.display_name} ({report.platform.architecture})",
         f"  Application dir : {report.root}",
     ]
@@ -2438,10 +2439,10 @@ def show_error_dialog(
 # Command line and main
 # ---------------------------------------------------------------------------
 
-HELP_TEXT = f"""{APP_NAME} universal launcher
+HELP_TEXT = f"""{APP_NAME}Launcher - PlanForge universal launcher
 
 Usage:
-  python launcher.py [launcher options] [--] [PlanForge arguments]
+  python PlanForgeLauncher.py [launcher options] [--] [PlanForge arguments]
 
 Launcher options:
   --check           Check the environment without changing anything
@@ -2454,14 +2455,15 @@ Launcher options:
   -h, --help        Show this help and exit
 
 Everything else is passed to PlanForge, for example:
-  python launcher.py my_project.pfp
-  python launcher.py --import-file schedule.xml --export-file schedule.gan
-  python launcher.py --import-file schedule.gan
+  python PlanForgeLauncher.py my_project.pfp
+  python PlanForgeLauncher.py --import-file schedule.xml --export-file schedule.gan
+  python PlanForgeLauncher.py --import-file schedule.gan
 
 Entry points:
-  Windows:      double-click run.bat
-  Linux/macOS:  ./run.sh
-  macOS:        double-click run.command
+  Windows:      double-click PlanForgeLauncher.bat
+  Linux/macOS:  ./PlanForgeLauncher.sh
+  macOS:        double-click PlanForgeLauncher.command
+  run.bat, run.sh and run.command remain as compatibility wrappers.
 
 Logs are written to logs/launcher.log next to this file.
 Exit codes: 0 ok, 10 Python missing, 11 Python too old, 12 environment error,
@@ -2582,10 +2584,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return report.exit_code
 
         if app_gui:
-            say(f"{APP_NAME} launcher")
+            say(f"{APP_NAME}Launcher")
             say(f"  Platform: {platform_info.display_name} ({platform_info.architecture})")
         else:
-            say(f"{APP_NAME} launcher ({platform_info.display_name}, {platform_info.architecture})")
+            say(f"{APP_NAME}Launcher ({platform_info.display_name}, {platform_info.architecture})")
 
         if options.recreate_venv:
             recreate_environment(paths)

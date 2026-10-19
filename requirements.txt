@@ -10,6 +10,6 @@
 #
 # This file is the single source of truth for third-party packages. Add
 # runtime dependencies here (preferably pinned or bounded, for example
-# "packaging>=23,<25") and launcher.py will install them into .venv. Keep
+# "packaging>=23,<25") and PlanForgeLauncher.py will install them into .venv. Keep
 # lines commented out or remove them when there are no dependencies; the
 # launcher treats a comment-only file as "nothing to install".
