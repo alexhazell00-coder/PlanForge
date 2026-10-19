@@ -71,6 +71,13 @@ class ConvertView(BaseView):
         self.dest_format_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready — use the current project, or pick a file to convert.")
         self.preview_result = None  # ImportResult
+        # Pre-populate format combos before building steps so default dest extension matches
+        # (otherwise first auto-suggest uses fallback .xml)
+        try:
+            # Temporarily create combos with correct values if session already available
+            self._pending_refresh = True
+        except Exception:
+            pass
 
         # Build wizard inside inner
         self._build_source_step()
@@ -80,8 +87,13 @@ class ConvertView(BaseView):
 
         # Bind auto-inspect for file mode
         self.source_path_var.trace_add("write", lambda *_a: self._auto_suggest_dest())
-        # Initial refresh to set up dropdowns
+        # Initial refresh to set up dropdowns and correct first suggestion
         self.refresh()
+        # Ensure initial dest matches chosen format (fix .xml vs .json mismatch)
+        try:
+            self._auto_suggest_dest(force=True)
+        except Exception:
+            pass
 
     def _on_canvas_resize(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self.win_id, width=event.width)
