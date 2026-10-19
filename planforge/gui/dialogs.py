@@ -280,7 +280,11 @@ class TaskDialog(_BaseDialog):
 
 
 class ImportDialog(_BaseDialog):
-    """Pick a file, preview what it contains, then import it."""
+    """Pick a file, preview what it contains, then import it.
+
+    Improvements: auto-detect hint, live validation, format description, help link,
+    and clearer messaging for .pod/.mpp guidance.
+    """
 
     def __init__(self, parent: tk.Misc, session: ProjectSession) -> None:
         super().__init__(parent, "Import Project")
@@ -295,19 +299,40 @@ class ImportDialog(_BaseDialog):
         ttk.Label(self.body, text="File").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
         file_row = ttk.Frame(self.body)
         file_row.grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Entry(file_row, textvariable=self.path_var, width=48).pack(side="left", fill="x", expand=True)
+        ttk.Entry(file_row, textvariable=self.path_var, width=42).pack(side="left", fill="x", expand=True)
         ttk.Button(file_row, text="Browse…", command=self._browse).pack(side="left", padx=(6, 0))
+        ttk.Button(file_row, text="Clear", command=lambda: (self.path_var.set(""), self._check())).pack(side="left", padx=(6, 0))
 
         ttk.Label(self.body, text="Format").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=4)
-        ttk.Combobox(self.body, textvariable=self.format_var, state="readonly", width=46,
-                     values=[label for _fid, label in self.format_choices]).grid(row=1, column=1, sticky="ew", pady=4)
+        fmt_combo = ttk.Combobox(self.body, textvariable=self.format_var, state="readonly", width=44,
+                     values=[label for _fid, label in self.format_choices])
+        fmt_combo.grid(row=1, column=1, sticky="ew", pady=4)
+        fmt_combo.bind("<<ComboboxSelected>>", lambda _e: self._check())
 
-        ttk.Button(self.body, text="Check file", command=self._check).grid(row=2, column=1, sticky="w", pady=6)
+        # Format hint
+        self.format_hint = ttk.Label(self.body, text="Auto-detect uses file content, not just extension — recommended.", style="Muted.TLabel", wraplength=380)
+        self.format_hint.grid(row=2, column=1, sticky="w", pady=(0, 2))
+
+        # Action row: Check + Help
+        action_row = ttk.Frame(self.body)
+        action_row.grid(row=3, column=1, sticky="w", pady=4)
+        ttk.Button(action_row, text="Check file", style="Accent.TButton", command=self._check).pack(side="left")
+        ttk.Button(action_row, text="Help", command=self._open_help).pack(side="left", padx=6)
+        ttk.Label(action_row, text="Browse auto-checks • Import replaces open project", style="Muted.TLabel").pack(side="left", padx=8)
 
         self.preview = tk.Text(self.body, width=62, height=12, wrap="word", relief="solid", borderwidth=1,
-                               state="disabled")
-        self.preview.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(4, 0))
+                               state="disabled", font=("Courier", 9))
+        self.preview.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
         self.ok_button.configure(text="Import", state="disabled")
+        # Show initial hint
+        self._write_preview([
+            "Choose a file to preview:",
+            "• Supported: .xml (MS Project / ProjectLibre), .gan (GanttProject), .csv, .json, .pfp",
+            "• .pod / .mpp will show instructions to export XML first (those formats are binary and unsafe to convert directly).",
+            "",
+            "Tip: All conversions are validated before saving. For one-step conversion, try the Convert tab.",
+            "Click Browse… to begin."
+        ])
 
     def _browse(self) -> None:
         path = filedialog.askopenfilename(parent=self, title="Choose a project file", filetypes=[
@@ -317,6 +342,22 @@ class ImportDialog(_BaseDialog):
         if path:
             self.path_var.set(path)
             self._check()
+
+    def _open_help(self) -> None:
+        # Try to jump to help in main app
+        try:
+            app = self.master  # type: ignore[attr-defined]
+            # Walk up to find PlanForgeApp
+            cur = self
+            while cur is not None and not hasattr(cur, "select_tab_by_key"):
+                cur = getattr(cur, "master", None)
+            if cur and hasattr(cur, "open_convert_help"):
+                self.destroy()
+                cur.open_convert_help()
+                return
+        except Exception:
+            pass
+        messagebox.showinfo("Import Help", "See the Convert tab or Help tab for the full conversion guide:\n1. Browse → Check → Import (replaces project)\n2. Then File → Export → choose format → save\n\nFor .pod/.mpp: open in ProjectLibre/MS Project → Save As → XML → import that XML.", parent=self)
 
     def _format_id(self) -> str | None:
         for fid, label in self.format_choices:
@@ -335,19 +376,28 @@ class ImportDialog(_BaseDialog):
         self._result = None
         self.ok_button.configure(state="disabled")
         if not path:
-            self.fail("Choose a file to import.")
+            self.fail("Choose a file to import — use Browse… or type a path.")
+            self._write_preview(["No file chosen.", "", "Click Browse… to select a file from ProjectLibre, MS Project, GanttProject, or a previous PlanForge export."])
             return
         if not Path(path).is_file():
-            self.fail("That file does not exist.")
+            self.fail("That file does not exist. Check the path.")
+            self._write_preview([f"File not found:\n{path}", "", "Use Browse… to locate the correct file."])
             return
         result = self.session.preview_import(path, format_id=self._format_id())
         lines: list[str] = []
         if result.project is None or not result.success:
             lines.append("This file could not be imported.")
+            lines.append("")
+            # Surface the most helpful message first
+            if result.issues:
+                lines.append("Details:")
+                lines += [f"  • {i.message}" for i in result.issues]
+            else:
+                lines.append("Unknown error. Try opening the file in its original app and exporting to XML.")
         else:
             summary = result.summary
             lines += [
-                f"Format: {result.source_format}",
+                f"✓ Format detected: {result.source_format}",
                 f"Project: {summary.name}",
                 f"Tasks: {summary.task_count} ({summary.subtask_count} subtasks, {summary.milestone_count} milestones)",
                 f"Dependencies: {summary.dependency_count}",
@@ -355,19 +405,21 @@ class ImportDialog(_BaseDialog):
                 f"Assignments: {summary.assignment_count}",
                 f"Dates: {summary.start_date or 'not set'} to {summary.finish_date or 'not set'}",
                 "",
-                "Importing replaces the open project. Save first if you need it.",
+                "✓ Ready to import. Click Import to replace the open project.",
+                "Tip: Save the current project first if you need it (File → Save As…).",
             ]
             self._result = result
             self.ok_button.configure(state="normal")
-        if result.issues:
+        if result.issues and result.success:
             lines.append("")
-            lines.append("Messages:")
+            lines.append("Messages (warnings included):")
             lines += [f"  [{i.severity}] {i.message}" for i in result.issues]
         self._write_preview(lines)
-        self.fail("" if self._result else "The file has errors. See the messages below.")
+        self.fail("" if self._result else "The file has errors. See the preview for details.")
 
     def on_ok(self) -> None:
         if self._result is None:
+            self.fail("Click Check file first to validate.")
             return
         try:
             self.session.apply_import(self._result)
@@ -379,7 +431,9 @@ class ImportDialog(_BaseDialog):
 
 
 class ExportDialog(_BaseDialog):
-    """Choose a format and a destination, then write the project out."""
+    """Choose a format and a destination, then write the project out.
+    Improvements: format description, smarter default path, open-folder help.
+    """
 
     def __init__(self, parent: tk.Misc, session: ProjectSession) -> None:
         super().__init__(parent, "Export Project")
@@ -392,14 +446,23 @@ class ExportDialog(_BaseDialog):
         combo = ttk.Combobox(self.body, textvariable=self.format_var, state="readonly", width=46,
                              values=[label for _fid, label, _ext in self.choices])
         combo.grid(row=0, column=1, sticky="ew", pady=4)
-        combo.bind("<<ComboboxSelected>>", lambda _e: self._suggest_path())
+        combo.bind("<<ComboboxSelected>>", lambda _e: self._on_format_changed())
 
-        ttk.Label(self.body, text="Save to").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=4)
+        self.desc_var = tk.StringVar()
+        ttk.Label(self.body, textvariable=self.desc_var, style="Muted.TLabel", wraplength=420, justify="left").grid(row=1, column=1, sticky="w", pady=(0, 6))
+
+        ttk.Label(self.body, text="Save to").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=4)
         file_row = ttk.Frame(self.body)
-        file_row.grid(row=1, column=1, sticky="ew", pady=4)
-        ttk.Entry(file_row, textvariable=self.path_var, width=48).pack(side="left", fill="x", expand=True)
+        file_row.grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Entry(file_row, textvariable=self.path_var, width=42).pack(side="left", fill="x", expand=True)
         ttk.Button(file_row, text="Browse…", command=self._browse).pack(side="left", padx=(6, 0))
+        ttk.Button(file_row, text="Suggest", command=self._suggest_path).pack(side="left", padx=(6, 0))
+
+        hint = ttk.Label(self.body, text="Tip: Export is validated and atomic (no half-files). Check the Convert tab for one-step import→export.", style="Muted.TLabel", wraplength=420)
+        hint.grid(row=3, column=1, sticky="w", pady=(4, 0))
+
         self.ok_button.configure(text="Export")
+        self._on_format_changed()
         self._suggest_path()
 
     def _selected(self) -> tuple[str, str]:
@@ -408,24 +471,60 @@ class ExportDialog(_BaseDialog):
                 return fid, ext
         return self.choices[0][0], self.choices[0][2]
 
+    def _on_format_changed(self) -> None:
+        fid, _ext = self._selected()
+        # Find description from registry if available
+        try:
+            fmt = self.session.manager.registry.get(fid)
+            desc = fmt.description if fmt else ""
+        except Exception:
+            desc = ""
+        if not desc:
+            # fallback
+            desc = {"microsoft-project-xml": "XML for MS Project / ProjectLibre",
+                    "ganttproject": "GanttProject .gan with tasks & allocations",
+                    "csv": "CSV task table with JSON-in-cell extensions",
+                    "planforge-json": "PlanForge canonical JSON backup",
+                    "pfp": "PlanForge SQLite database"}.get(fid, "")
+        self.desc_var.set(desc)
+        # Only auto-suggest if path is empty or looks like a previous suggestion (in home)
+        current = self.path_var.get().strip()
+        if not current or current.startswith(str(Path.home())):
+            self._suggest_path()
+
     def _suggest_path(self) -> None:
         _fid, ext = self._selected()
         base = "".join(c if c.isalnum() or c in " -_" else "_" for c in self.session.project.name).strip() or "project"
-        self.path_var.set(str(Path.home() / f"{base.replace(' ', '_').lower()}{ext}"))
+        filename = f"{base.replace(' ', '_').lower()}{ext}"
+        # Prefer current file's directory, then source directory, then home
+        try:
+            if self.session.file_path and self.session.file_path.parent.exists():
+                target = self.session.file_path.parent / filename
+            else:
+                target = Path.home() / filename
+        except Exception:
+            target = Path.home() / filename
+        self.path_var.set(str(target))
 
     def _browse(self) -> None:
         _fid, ext = self._selected()
         path = filedialog.asksaveasfilename(parent=self, title="Export project", initialfile=Path(self.path_var.get()).name,
                                             defaultextension=ext, filetypes=[(ext, f"*{ext}"), ("All files", "*.*")])
         if path:
+            # Ensure extension
+            if ext and not path.lower().endswith(ext.lower()):
+                path = path + ext
             self.path_var.set(path)
 
     def on_ok(self) -> None:
         path = self.path_var.get().strip()
         if not path:
-            self.fail("Choose where to save the file.")
+            self.fail("Choose where to save the file (Browse… or Suggest).")
             return
-        fid, _ext = self._selected()
+        fid, ext = self._selected()
+        if ext and not path.lower().endswith(ext.lower()):
+            path = path + ext
+            self.path_var.set(path)
         try:
             self.session.export_to(path, fid)
         except SessionError as exc:
@@ -433,7 +532,21 @@ class ExportDialog(_BaseDialog):
             return
         self.result = True
         self.destroy()
-        messagebox.showinfo("Export complete", f"Saved to:\n{path}", parent=self.master)
+        # Offer to show in folder
+        if messagebox.askyesno("Export complete", f"Saved to:\n{path}\n\nShow in folder?", parent=self.master):
+            try:
+                import subprocess, sys, os
+                folder = Path(path).parent
+                if sys.platform == "win32":
+                    os.startfile(str(folder))  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(folder)])
+                else:
+                    subprocess.Popen(["xdg-open", str(folder)])
+            except Exception:
+                pass
+        else:
+            messagebox.showinfo("Export complete", f"Saved to:\n{path}\nFormat: {fid}", parent=self.master)
 
 
 def _fmt(value: float | None) -> str:
