@@ -304,10 +304,23 @@ class PlanForgeApp(tk.Tk):
 
     def quick_convert(self) -> None:
         """Jump to the Convert tab — the easiest way to convert formats."""
-        self.select_tab_by_key("convert")
+        if self.select_tab_by_key("convert"):
+            # Give immediate feedback that the button worked (status bar updates, preview refreshes via tab change)
+            try:
+                cv = self.views.get("convert")
+                if cv and hasattr(cv, "status_var"):
+                    cv.status_var.set("Convert tab ready — Current project is pre-selected. Choose target format and click Convert.")
+            except Exception:
+                pass
 
     def open_help(self) -> None:
-        self.select_tab_by_key("help")
+        if self.select_tab_by_key("help"):
+            try:
+                hv = self.views.get("help")
+                if hv and hasattr(hv, "status_var"):
+                    pass  # help tab has its own status
+            except Exception:
+                pass
 
     def open_convert_help(self) -> None:
         # Go to help then filter to convert section if possible
