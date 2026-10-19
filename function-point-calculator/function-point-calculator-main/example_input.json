@@ -1,0 +1,48 @@
+{
+  "application": "Simple Function Point Calculator",
+  "format_version": 3,
+  "saved": "2026-10-16 10:31",
+  "people": [
+    {
+      "name": "AH",
+      "hourly_rate": 30.0,
+      "hours_per_complex_point": 2.5,
+      "hours_per_simple_point": 1.0,
+      "tasks": [
+        {
+          "name": "Design user interface",
+          "type": "complex",
+          "points": 8
+        },
+        {
+          "name": "Build login database",
+          "type": "complex",
+          "points": 14
+        },
+        {
+          "name": "Write user guide",
+          "type": "simple",
+          "points": 20
+        }
+      ]
+    },
+    {
+      "name": "TJ",
+      "hourly_rate": 22.5,
+      "hours_per_complex_point": 3.0,
+      "hours_per_simple_point": 1.5,
+      "tasks": [
+        {
+          "name": "Integration testing",
+          "type": "complex",
+          "points": 6
+        },
+        {
+          "name": "Write test plan",
+          "type": "simple",
+          "points": 10
+        }
+      ]
+    }
+  ]
+}
