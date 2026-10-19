@@ -1,5 +1,13 @@
 # PlanForge
 
+> **Checkout status (2026-10-19):** this repository revision does not contain
+> the PlanForge desktop application or its project-storage code. The product
+> description below documents the intended application; the runnable source,
+> launchers, and original tests are absent from this checkout. The currently
+> implemented interoperability foundation is documented in
+> [`docs/interoperability.md`](docs/interoperability.md) and is not wired into
+> the desktop UI.
+
 PlanForge is an offline desktop project planner. You create a project, add
 people with rates and availability, estimate tasks (by function points or by
 hand), and PlanForge builds a dependency-aware schedule. You can view the
@@ -30,28 +38,18 @@ on your computer.
 
 ## Quick start
 
-PlanForge needs Python 3.10 or newer. The launcher checks for it, creates a
-private `.venv` folder inside the project, and installs the packages from
-`requirements.txt` the first time. It does not install anything system-wide
-and does not need administrator rights.
+The desktop application launchers and entry points described in the original
+product notes are not included in this checkout. The available Python package
+is the standalone interoperability library; it requires Python 3.10 or newer
+and has no third-party dependencies.
 
-- **Windows:** double-click `run.bat`.
-- **Linux and macOS:** from the project folder, run `./run.sh`. If it says
-  "Permission denied", run `chmod +x run.sh` once. You can also run
-  `sh run.sh`.
+Run its tests with:
 
-If Python is missing, the launcher shows where to get it and exits. It does
-not install anything silently. Later launches skip the setup step when the
-packages are already installed.
+    python3 -m unittest discover -v
 
-You can also run PlanForge directly, if you manage your own environment:
-
-    python planforge_app.py
-
-or `python -m planforge`.
-
-The first time you open PlanForge, it starts with a new, unsaved project.
-Use **File > Save as...** to give it a name and location.
+See [`docs/interoperability.md`](docs/interoperability.md) for import/export
+examples. Do not use the desktop-app launch commands in older copies of this
+document until the application source has been restored.
 
 ## What you can do
 
@@ -211,22 +209,32 @@ recalculated from your inputs.
 
 ## Importing and exporting
 
-PlanForge reads and writes these formats:
+The standalone interoperability package currently implements these adapters:
 
-| Format | Import | Export | Notes |
-| --- | --- | --- | --- |
-| PlanForge project (`.pfp`) | Open | Save | The full project, with all its data. |
-| PlanForge JSON (`.json`) | No | Yes | A readable copy of the full project. |
-| Calculator project (`.json`) | Yes | Yes | Works with the original calculator. Some PlanForge data cannot be stored in this format, and PlanForge lists those items when you export. |
-| Tasks (`.csv`) | No | Yes | One row per task. |
-| Assignments (`.csv`) | No | Yes | One row per person-task assignment. |
-| Summary (`.txt`) | No | Yes | The Summary page as plain text. |
+| Format | Adapter import | Adapter export | Adapter round-trip tested | External-application round-trip tested |
+| --- | --- | --- | --- | --- |
+| PlanForge JSON (`.json`, schema v1) | Yes | Yes | Yes | No |
+| PlanForge CSV template (`.csv`) | Yes | Yes | Yes | No |
+| Mapped CSV task lists (`.csv`) | Yes | N/A | Mapping/import tested | No |
+| PlanForge project (`.pfp`) | No | No | No | No |
+| Calculator JSON | No | No | No | No |
+| Microsoft Project XML / ProjectLibre XML | No | No | No | No |
+| ProjectLibre POD (`.pod`) | No | No | No | No |
+| Microsoft Project MPP (`.mpp`) | No | No | No | No |
+| GanttProject GAN (`.gan`) | No | No | No | No |
 
-Exports write to a file you choose. The original project file is not
-changed by an export.
+The JSON adapter uses a versioned, explicit project interchange model. The
+CSV template uses one row per task and optional JSON-in-cell columns for
+relationships, resources, assignments, calendars, and custom data. Plain CSV
+files are not assumed to contain complete scheduling information. Unknown
+JSON fields and unmapped CSV columns are retained where possible, and invalid
+references are reported. See [`docs/interoperability.md`](docs/interoperability.md)
+for the schema, mappings, limitations, and programmatic API.
 
-PDF export, and import and export for ProjectLibre and Microsoft Project, are
-not available yet.
+These are backend adapters only. This checkout has no desktop file menu,
+`.pfp` persistence, Function Point Calculator adapter, or external-application
+round-trip validation. Do not treat the adapters as integrated desktop import
+or export until the missing application source is restored.
 
 ## Autosave, recovery and backups
 
@@ -280,19 +288,17 @@ anything risky.
 
 ## For developers
 
-- **Entry points:** `planforge_app.py` (launched by the launcher),
-  `python -m planforge`, and `planforge/ui/app.py`.
-- **Layers:** `planforge/model.py` (data), `planforge/storage/` (SQLite),
-  `planforge/interchange/` (JSON, CSV and calculator files),
-  `planforge/scheduling/` (calendar and engine), `planforge/estimation.py`
-  and `planforge/editing.py` (estimates and undoable edits), and
-  `planforge/ui/` (the Qt window). The UI does not contain business logic.
-- **Design notes:** see `ARCHITECTURE.md`.
-- **Tests:** run `python3 -m unittest` from the project root. Tests that open
-  windows need a display. On a computer without one, set
-  `QT_QPA_PLATFORM=offscreen`, or they are skipped.
-- **Dependencies:** `requirements.txt` pins PySide6 6.12.0. Nothing else is
-  needed to run PlanForge.
+- **Available source in this checkout:** `planforge/model.py` and
+  `planforge/interchange/` implement a standalone exchange contract, JSON/CSV
+  adapters, validation, registry, and comparisons. The desktop application,
+  SQLite storage, scheduling engine, Function Point Calculator integration,
+  UI, and launcher files described elsewhere in this README are not included.
+- **Interoperability notes:** see [`docs/interoperability.md`](docs/interoperability.md)
+  and [`schemas/planforge-project-v1.schema.json`](schemas/planforge-project-v1.schema.json).
+- **Tests:** run `python3 -m unittest discover -v` from the project root.
+- **Dependencies:** the current interoperability package uses only the Python
+  standard library (Python 3.10+). There is no `requirements.txt` in this
+  checkout.
 
 ## Status
 
