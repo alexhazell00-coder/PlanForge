@@ -26,6 +26,15 @@ def _task_named(session: ProjectSession, name: str):
 
 
 class DefaultProjectTests(unittest.TestCase):
+    def test_new_project_starts_blank_without_replacing_first_launch_sample(self) -> None:
+        s = ProjectSession()
+        self.assertEqual(len(s.project.tasks), 4)
+        s.new_project()
+        self.assertEqual(s.project.name, "Untitled project")
+        self.assertEqual(s.project.tasks, [])
+        self.assertIsNone(s.file_path)
+        self.assertFalse(s.dirty)
+
     def test_default_project_is_scheduled_with_critical_path(self) -> None:
         s = ProjectSession()
         names = [r.task.name for r in s.task_rows()]
