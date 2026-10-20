@@ -11,9 +11,10 @@ import tkinter as tk
 from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from planforge import estimation
+from planforge.config import format_date, get_preference, set_preference
 from planforge.gui.dialogs import FormDialog, FormField, TaskDialog
 from planforge.session import WEEKDAY_NAMES, SessionError, format_money
 
@@ -77,7 +78,7 @@ def make_tree(parent: tk.Misc, columns: list[tuple[str, str, int, str]], *, tree
 
 
 def _iso(value: date | None) -> str:
-    return value.isoformat() if value else ""
+    return format_date(value)
 
 
 def _num(values: dict[str, str], key: str, label: str, *, minimum: float | None = None,
@@ -100,7 +101,15 @@ class OverviewView(BaseView):
     def _build(self) -> None:
         self.subtitle = self._title("Project Overview")
         self.project_label = ttk.Label(self, style="Muted.TLabel")
-        self.project_label.pack(anchor="w", pady=(0, 12))
+        self.project_label.pack(anchor="w", pady=(0, 8))
+        self._suggestions_enabled = get_preference("workspace", "show_suggestions", "true").casefold() not in ("false", "0", "no")
+        self._dismissed_suggestions = set(filter(None, get_preference("workspace", "dismissed_suggestions", "").split(",")))
+        self.suggestions_box = ttk.LabelFrame(self, text="Suggested next steps", padding=(10, 6))
+        self.suggestions_box.pack(fill="x", pady=(0, 10))
+        self.suggestions = ttk.Frame(self.suggestions_box)
+        self.suggestions.pack(side="left", fill="x", expand=True)
+        self.suggestions_toggle = ttk.Button(self.suggestions_box, text="Hide", command=self._toggle_suggestions)
+        self.suggestions_toggle.pack(side="right", padx=(8, 0))
 
         cards = ttk.Frame(self)
         cards.pack(fill="x")
@@ -134,7 +143,56 @@ class OverviewView(BaseView):
         ], tree_heading="Person", tree_width=200, height=10)
         lists.rowconfigure(0, weight=1)
 
+    def _toggle_suggestions(self) -> None:
+        self._suggestions_enabled = not self._suggestions_enabled
+        try:
+            set_preference("workspace", "show_suggestions", str(self._suggestions_enabled).lower())
+        except OSError:
+            pass
+        self._refresh_suggestions()
+
+    def _dismiss_suggestion(self, suggestion_id: str) -> None:
+        self._dismissed_suggestions.add(suggestion_id)
+        try:
+            set_preference("workspace", "dismissed_suggestions", ",".join(sorted(self._dismissed_suggestions)))
+        except OSError:
+            pass
+        self._refresh_suggestions()
+
+    def _refresh_suggestions(self) -> None:
+        for child in self.suggestions.winfo_children():
+            child.destroy()
+        if not self._suggestions_enabled:
+            self.suggestions_toggle.configure(text="Show")
+            ttk.Label(self.suggestions, text="Suggestions are hidden. Show them when useful.",
+                      style="Muted.TLabel").pack(anchor="w")
+            return
+        self.suggestions_toggle.configure(text="Hide")
+        session = self.session
+        actions: list[tuple[str, str, Callable[[], Any]]] = []
+        if not session.project.tasks:
+            actions.append(("first_task", "Add your first task", lambda: self.app._run_view_action("tasks", "_add")))
+        if session.dirty:
+            actions.append(("save", "Save unsaved project changes", self.app.save_project))
+        if not session.project.resources:
+            actions.append(("team", "Add a team member", lambda: self.app._run_view_action("people", "_add")))
+        elif session.project.tasks and not session.project.assignments:
+            actions.append(("assignments", "Review task assignments", lambda: self.app.select_tab_by_key("tasks")))
+        if len(session.project.tasks) > 1 and not session.project.dependencies:
+            actions.append(("dependencies", "Review task dependencies", lambda: self.app.select_tab_by_key("tasks")))
+        actions = [item for item in actions if item[0] not in self._dismissed_suggestions][:3]
+        if not actions:
+            ttk.Label(self.suggestions, text="Everything looks in order — no suggested actions right now.",
+                      style="Muted.TLabel").pack(anchor="w")
+            return
+        for suggestion_id, text, action in actions:
+            row = ttk.Frame(self.suggestions)
+            row.pack(fill="x", pady=2)
+            ttk.Button(row, text=text, command=action).pack(side="left")
+            ttk.Button(row, text="Dismiss", command=lambda key=suggestion_id: self._dismiss_suggestion(key)).pack(side="left", padx=6)
+
     def refresh(self) -> None:
+        self._refresh_suggestions()
         ov = self.session.overview()
         self.project_label.configure(text=(
             f"{ov.name}   ·   {_iso(ov.start_date) or 'Start not set'} to {_iso(ov.finish_date) or 'finish not set'}"
@@ -171,6 +229,7 @@ class TasksView(BaseView):
         bar = self._toolbar()
         self.search_var = tk.StringVar()
         search = ttk.Entry(bar, textvariable=self.search_var, width=28)
+        self.search_entry = search
         search.pack(side="left")
         ttk.Label(bar, text="  Search", style="Muted.TLabel").pack(side="left", before=search)
         self.search_var.trace_add("write", lambda *_a: self.refresh())
@@ -183,15 +242,46 @@ class TasksView(BaseView):
         ]:
             ttk.Button(bar, text=text, command=command).pack(side="right", padx=(6, 0))
         ttk.Button(bar, text="+ Task", style="Accent.TButton", command=self._add).pack(side="right", padx=(6, 0))
+        self.empty_label = ttk.Label(self, text="", style="Muted.TLabel")
+        self.empty_label.pack(anchor="w", pady=(0, 4))
 
+        self._task_column_ids = ("duration", "start", "finish", "progress", "predecessor", "people", "cost")
+        self._task_column_labels = ("Duration", "Start", "Finish", "Done", "Predecessor", "Person", "Cost")
         self.tree = make_tree(self, [
             ("duration", "Duration", 90, "e"), ("start", "Start", 100, "w"), ("finish", "Finish", 100, "w"),
             ("progress", "Done", 60, "e"), ("predecessor", "Predecessor", 200, "w"),
             ("people", "Person", 180, "w"), ("cost", "Cost", 100, "e"),
         ], tree_heading="Task", tree_width=340, height=18)
+        saved_hidden = set(get_preference("workspace", "hidden_task_columns", "").split(","))
+        self._column_vars = {key: tk.BooleanVar(value=key not in saved_hidden)
+                             for key in self._task_column_ids}
+        self.columns_menu = tk.Menu(self, tearoff=False)
+        for key, label in zip(self._task_column_ids, self._task_column_labels):
+            self.columns_menu.add_checkbutton(label=label, variable=self._column_vars[key],
+                                              command=self._apply_task_columns)
+        ttk.Menubutton(bar, text="Columns ▾", menu=self.columns_menu).pack(side="left", padx=(8, 0))
+        self._apply_task_columns(save=False)
         self.tree.bind("<Double-1>", lambda _e: self._edit())
         self.tree.bind("<Return>", lambda _e: self._edit())
         self.tree.bind("<Delete>", lambda _e: self._delete())
+        self.context_menu = tk.Menu(self, tearoff=False)
+        self.context_menu.add_command(label="Edit Task…", command=self._edit)
+        self.context_menu.add_command(label="Add Subtask…", command=self._add_subtask)
+        self.context_menu.add_command(label="Edit Dependencies / Assignment…", command=self._edit)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Delete Task…", command=self._delete)
+        self.tree.bind("<Button-3>", self._show_context_menu)
+        self.tree.bind("<Control-Button-1>", self._show_context_menu)
+
+    def _apply_task_columns(self, save: bool = True) -> None:
+        visible = [key for key in self._task_column_ids if self._column_vars[key].get()]
+        self.tree.configure(displaycolumns=visible)
+        if save:
+            hidden = [key for key in self._task_column_ids if key not in visible]
+            try:
+                set_preference("workspace", "hidden_task_columns", ",".join(hidden))
+            except OSError:
+                self.app.status_var.set("Task columns changed for this session, but the preference could not be saved.")
 
     def _selected(self) -> str | None:
         selection = self.tree.selection()
@@ -214,6 +304,45 @@ class TasksView(BaseView):
             self.tree.selection_set(created[0])
             self.tree.focus(created[0])
             self._open_editor(created[0])
+
+    def _show_context_menu(self, event: tk.Event) -> str:
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return "break"
+        self.tree.selection_set(row)
+        self.tree.focus(row)
+        self.context_menu.tk_popup(event.x_root, event.y_root)
+        self.context_menu.grab_release()
+        return "break"
+
+    def _add_subtask(self) -> None:
+        parent_id = self._require_selection()
+        if not parent_id:
+            return
+        created: list[str] = []
+
+        def action() -> None:
+            task = self.session.add_task("New subtask", parent_id=parent_id)
+            created.append(task.id)
+
+        if self.app.perform(action) and created:
+            self.tree.selection_set(created[0])
+            self.tree.focus(created[0])
+            self._open_editor(created[0])
+
+    def select_task_by_id(self, task_id: str) -> None:
+        self.search_var.set("")
+        self.refresh()
+        if self.tree.exists(task_id):
+            self.tree.selection_set(task_id)
+            self.tree.focus(task_id)
+            self.tree.see(task_id)
+
+    def edit_task_by_id(self, task_id: str) -> None:
+        self.app.select_tab_by_key("tasks")
+        self.select_task_by_id(task_id)
+        if self.tree.exists(task_id):
+            self._open_editor(task_id)
 
     def _indent(self) -> None:
         task_id = self._require_selection()
@@ -257,6 +386,7 @@ class TasksView(BaseView):
 
         needle = self.search_var.get().strip().casefold()
         rows = self.session.task_rows()
+        visible_count = 0
         for row in rows:
             task = row.task
             if needle and needle not in task.name.casefold():
@@ -279,6 +409,12 @@ class TasksView(BaseView):
                 f"{task.percent_complete:.0f}%", self.session.predecessor_names(task.id),
                 people.name if people else "", cost,
             ))
+            visible_count += 1
+        if not visible_count:
+            self.empty_label.configure(text=("No tasks match this search." if rows else
+                                             "No tasks yet — add a task or milestone to start planning."))
+        else:
+            self.empty_label.configure(text="")
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
             self.tree.see(selected)
@@ -295,12 +431,27 @@ class PeopleView(BaseView):
         ttk.Button(bar, text="+ Add Person", style="Accent.TButton", command=self._add).pack(side="left")
         ttk.Button(bar, text="Edit", command=self._edit).pack(side="left", padx=6)
         ttk.Button(bar, text="Delete", command=self._delete).pack(side="left")
+        self.empty_label = ttk.Label(self, text="", style="Muted.TLabel")
+        self.empty_label.pack(anchor="w", pady=(0, 4))
         self.tree = make_tree(self, [
             ("rate", "Rate / hour", 120, "e"), ("hours", "Hours / day", 100, "e"),
             ("tasks", "Tasks", 70, "e"), ("total", "Total hours", 110, "e"),
             ("cost", "Total cost", 120, "e"),
         ], tree_heading="Name", tree_width=300, height=16)
         self.tree.bind("<Double-1>", lambda _e: self._edit())
+        self.context_menu = tk.Menu(self, tearoff=False)
+        self.context_menu.add_command(label="Edit Resource…", command=self._edit)
+        self.context_menu.add_command(label="Remove Resource…", command=self._delete)
+        self.tree.bind("<Button-3>", self._show_context_menu)
+        self.tree.bind("<Control-Button-1>", self._show_context_menu)
+
+    def _show_context_menu(self, event: tk.Event) -> str:
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+            self.context_menu.grab_release()
+        return "break"
 
     def _selected(self) -> str | None:
         selection = self.tree.selection()
@@ -353,11 +504,13 @@ class PeopleView(BaseView):
         selected = self._selected()
         self.tree.delete(*self.tree.get_children())
         currency = self.session.project.currency
-        for w in self.session.person_workloads():
+        workloads = self.session.person_workloads()
+        for w in workloads:
             self.tree.insert("", "end", iid=w.resource_id, text=w.name, values=(
                 format_money(w.rate or 0.0, currency) if w.rate is not None else "not set",
                 f"{w.hours_per_day:g}", w.task_count, f"{w.hours:,.1f}", format_money(w.cost, currency),
             ))
+        self.empty_label.configure(text="" if workloads else "No team members yet — add a person to plan workload and costs.")
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
 
@@ -453,6 +606,8 @@ class EstimatorView(BaseView):
         left.grid(row=0, column=0, sticky="ns", padx=(0, 12))
         self.listbox = tk.Listbox(left, height=14, width=24, exportselection=False, relief="flat", borderwidth=0)
         self.listbox.pack(fill="both", expand=True)
+        self.empty_label = ttk.Label(left, text="", style="Muted.TLabel", wraplength=180)
+        self.empty_label.pack(anchor="w", pady=(4, 0))
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
         ttk.Button(left, text="+ Add Estimator", command=self._add_estimator).pack(fill="x", pady=(8, 4))
         ttk.Button(left, text="Remove", style="Danger.TButton", command=self._remove_estimator).pack(fill="x")
@@ -617,6 +772,7 @@ class EstimatorView(BaseView):
         self.listbox.delete(0, "end")
         for person in self.session.estimators:
             self.listbox.insert("end", person["name"])
+        self.empty_label.configure(text="" if self.session.estimators else "No estimators yet. Add one to calculate function-point effort.")
         if self.selected is not None and self.selected < len(self.session.estimators):
             self.listbox.selection_clear(0, "end")
             self.listbox.selection_set(self.selected)
@@ -737,7 +893,7 @@ class SettingsView(BaseView):
         ttk.Button(self, text="Apply Changes", style="Accent.TButton", command=self._apply).pack(anchor="w", pady=16)
         ttk.Label(self, style="Muted.TLabel", text=(
             "Changing the start date or working days reschedules every task. "
-            "Theme and window preferences are saved in .config/PlanForge/PlanForge.conf.")
+            "Appearance and workspace preferences are stored separately in your per-user settings.")
         ).pack(anchor="w")
 
     @staticmethod

@@ -85,6 +85,46 @@ class TaskHierarchyTests(unittest.TestCase):
         self.assertEqual(t.duration, 1.0)
         self.assertGreater(t.order, m.order)
 
+    def test_undo_redo_add_task_restores_complete_project_snapshots(self) -> None:
+        s = ProjectSession()
+        original_count = len(s.project.tasks)
+        task = s.add_task("Undoable task")
+        self.assertTrue(s.can_undo)
+        self.assertFalse(s.can_redo)
+        s.undo()
+        self.assertEqual(len(s.project.tasks), original_count)
+        self.assertFalse(s.dirty)
+        self.assertFalse(s.can_undo)
+        self.assertTrue(s.can_redo)
+        s.redo()
+        self.assertEqual(len(s.project.tasks), original_count + 1)
+        self.assertEqual(s.project.tasks[-1].id, task.id)
+        self.assertTrue(s.dirty)
+
+    def test_new_project_can_be_undone_and_redone(self) -> None:
+        s = ProjectSession()
+        sample_name = s.project.name
+        s.new_project()
+        s.undo()
+        self.assertEqual(s.project.name, sample_name)
+        self.assertEqual(len(s.project.tasks), 4)
+        s.redo()
+        self.assertEqual(s.project.name, "Untitled project")
+        self.assertEqual(s.project.tasks, [])
+
+    def test_undo_after_save_marks_older_snapshot_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = ProjectSession()
+            task = session.add_task("Saved version")
+            destination = Path(tmp) / "project.pfp"
+            session.save(destination)
+            self.assertFalse(session.dirty)
+            session.undo()
+            self.assertNotIn(task.id, {item.id for item in session.project.tasks})
+            self.assertTrue(session.dirty)
+            session.redo()
+            self.assertFalse(session.dirty)
+
     def test_blank_name_is_rejected(self) -> None:
         with self.assertRaises(SessionError):
             ProjectSession().add_task("   ")
@@ -314,11 +354,92 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.get_theme_setting(conf), "light")
             conf.parent.mkdir(parents=True)
             conf.write_text("[other]\nkey = value\n", encoding="utf-8")
-            config.set_theme_setting("dark", conf)
-            self.assertEqual(config.get_theme_setting(conf), "dark")
-            self.assertIn("key = value", conf.read_text(encoding="utf-8"))
+            config.set_theme_setting("custom-harbor-12345678", conf)
+            self.assertEqual(config.get_theme_setting(conf), "custom-harbor-12345678")
+            saved = conf.read_text(encoding="utf-8")
+            self.assertIn("key = value", saved)
+            self.assertIn("settings_version = 1", saved)
             with self.assertRaises(ValueError):
                 config.set_theme_setting("neon", conf)
+
+    def test_platform_config_directories(self) -> None:
+        home = Path("/home/tester")
+        self.assertEqual(
+            config.get_config_dir(platform_name="linux", environ={"XDG_CONFIG_HOME": "/tmp/cfg"}, home=home),
+            Path("/tmp/cfg/PlanForge"),
+        )
+        self.assertEqual(
+            config.get_config_dir(platform_name="darwin", environ={}, home=home),
+            home / "Library" / "Application Support" / "PlanForge",
+        )
+        self.assertEqual(
+            config.get_config_dir(platform_name="win32", environ={"APPDATA": "C:/Users/test/AppData/Roaming"}, home=home),
+            Path("C:/Users/test/AppData/Roaming/PlanForge"),
+        )
+
+    def test_corrupt_settings_fall_back_and_recover_on_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "PlanForge.conf"
+            conf.write_text("[broken\nnot valid", encoding="utf-8")
+            self.assertEqual(config.get_theme_setting(conf), "light")
+            config.set_theme_setting("classic", conf)
+            self.assertEqual(config.get_theme_setting(conf), "classic")
+            self.assertTrue(Path(f"{conf}.corrupt").exists())
+
+    def test_future_settings_version_is_not_downgraded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "PlanForge.conf"
+            conf.write_text("[app]\nsettings_version = 42\n[view]\ntheme = dark\n", encoding="utf-8")
+            config.set_theme_setting("light", conf)
+            config.set_theme_setting("system", conf)
+            self.assertEqual(config.get_theme_setting(conf), "system")
+            self.assertIn("settings_version = 42", conf.read_text(encoding="utf-8"))
+
+    def test_workspace_preferences_round_trip_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "PlanForge.conf"
+            config.set_preference("workspace", "timeline_zoom", "Weeks", conf)
+            config.set_preference("workspace", "show_suggestions", "false", conf)
+            self.assertEqual(config.get_preference("workspace", "timeline_zoom", "Days", conf), "Weeks")
+            self.assertEqual(config.get_preference("workspace", "show_suggestions", "true", conf), "false")
+            self.assertEqual(config.get_theme_setting(conf), "light")
+
+    def test_recent_projects_are_bounded_deduplicated_and_clearable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf = root / "PlanForge.conf"
+            paths = [root / f"project-{index}.pfp" for index in range(12)]
+            for path in paths:
+                config.remember_recent_project(path, conf)
+            config.remember_recent_project(paths[0], conf)
+            recent = config.get_recent_projects(conf)
+            self.assertEqual(len(recent), 10)
+            self.assertEqual(recent[0], paths[0].resolve())
+            self.assertEqual(len(set(recent)), 10)
+            config.clear_recent_projects(conf)
+            self.assertEqual(config.get_recent_projects(conf), [])
+
+    def test_workspace_layouts_and_date_formats_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "PlanForge.conf"
+            config.set_workspace_layout("Planning", 2, "Weeks", ["cost", "cost"], conf)
+            self.assertEqual(config.get_workspace_layouts(conf)["Planning"],
+                             {"tab": 2, "zoom": "Weeks", "hidden": ["cost"]})
+            config.set_preference("workspace", "date_format", "UK", conf)
+            self.assertEqual(config.format_date(date(2026, 10, 20), conf), "20/10/2026")
+            with self.assertRaises(ValueError):
+                config.set_workspace_layout("Bad", 99, "Weeks", [], conf)
+
+    def test_custom_shortcut_keys_are_validated_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = Path(tmp) / "PlanForge.conf"
+            keys = config.validate_shortcut_keys({"new": "G", "redo": "R"}, conf)
+            config.set_preferences("shortcuts", keys, conf)
+            self.assertEqual(config.get_shortcut_keys(conf)["new"], "G")
+            with self.assertRaises(ValueError):
+                config.validate_shortcut_keys({"new": "O"}, conf)
+            with self.assertRaises(ValueError):
+                config.validate_shortcut_keys({"save": "T"}, conf)
 
 
 class CommandLineTests(unittest.TestCase):

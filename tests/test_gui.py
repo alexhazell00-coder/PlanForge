@@ -63,12 +63,34 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertEqual(self.app.session.project.tasks, [])
         entry.destroy()
 
-    def test_theme_toggle_keeps_views_consistent(self) -> None:
+    def test_theme_toggle_cycles_built_ins_without_changing_project(self) -> None:
+        from planforge.config import THEMES
+
         before = self.app.theme_name
-        self.app.toggle_theme()
-        self.assertNotEqual(self.app.theme_name, before)
-        self.app.toggle_theme()
-        self.assertEqual(self.app.theme_name, before)
+        project_id = self.app.session.project.id
+        if before in THEMES:
+            for _ in THEMES:
+                self.app.toggle_theme()
+            self.assertEqual(self.app.theme_name, before)
+        else:
+            self.app.toggle_theme()
+            self.assertEqual(self.app.theme_name, THEMES[0])
+            self.app.set_theme(before)
+        self.assertEqual(self.app.session.project.id, project_id)
+
+    def test_builtin_palettes_cover_theme_editor_colors(self) -> None:
+        from planforge.gui.theme import PALETTES
+        from planforge.theme_library import PALETTE_KEYS
+
+        for palette in PALETTES.values():
+            self.assertEqual(set(palette), set(PALETTE_KEYS))
+            self.assertTrue(all(len(value) == 7 and value.startswith("#") for value in palette.values()))
+
+    def test_task_and_gantt_context_menus_exist(self) -> None:
+        tasks = self.app.views["tasks"]
+        timeline = self.app.views["timeline"]
+        self.assertGreaterEqual(tasks.context_menu.index("end"), 3)
+        self.assertGreaterEqual(timeline.context_menu.index("end"), 1)
 
     def test_task_editor_saves_through_session(self) -> None:
         from planforge.gui.dialogs import TaskDialog

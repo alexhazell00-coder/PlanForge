@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -182,6 +183,57 @@ class ProjectSession:
         self.dirty = False
         # Function Point estimators are kept in memory until transferred, as in earlier versions.
         self.estimators: list[dict] = []
+        self._undo_stack: list[dict] = []
+        self._redo_stack: list[dict] = []
+        self._history_limit = 100
+        self._history_snapshot = self._capture_state()
+
+    def _capture_state(self) -> dict:
+        return {
+            "project": deepcopy(self.project),
+            "file_path": self.file_path,
+            "dirty": self.dirty,
+            "estimators": deepcopy(self.estimators),
+        }
+
+    def _record_history_change(self) -> None:
+        self._undo_stack.append(self._history_snapshot)
+        if len(self._undo_stack) > self._history_limit:
+            del self._undo_stack[0]
+        self._redo_stack.clear()
+        self._history_snapshot = self._capture_state()
+
+    @property
+    def can_undo(self) -> bool:
+        return bool(self._undo_stack)
+
+    @property
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
+    def _restore_state(self, snapshot: dict) -> None:
+        self.project = schedule_project(deepcopy(snapshot["project"]))
+        self._normalize_hierarchy()
+        self.file_path = snapshot["file_path"]
+        self.dirty = snapshot["dirty"]
+        self.estimators = deepcopy(snapshot["estimators"])
+        self._history_snapshot = self._capture_state()
+
+    def undo(self) -> None:
+        """Restore the previous complete project snapshot."""
+        if not self._undo_stack:
+            raise SessionError("There is nothing to undo.")
+        self._redo_stack.append(self._capture_state())
+        self._restore_state(self._undo_stack.pop())
+
+    def redo(self) -> None:
+        """Restore the next complete project snapshot."""
+        if not self._redo_stack:
+            raise SessionError("There is nothing to redo.")
+        self._undo_stack.append(self._capture_state())
+        if len(self._undo_stack) > self._history_limit:
+            del self._undo_stack[0]
+        self._restore_state(self._redo_stack.pop())
 
     # ------------------------------------------------------------------
     # Lifecycle: new, open, save, import, export
@@ -197,6 +249,15 @@ class ProjectSession:
             raise SessionError(f"Could not open {Path(path).name}: {exc}") from exc
         self._replace(project, file_path=Path(path), dirty=False)
 
+    def restore_recovery(self, snapshot_path: str | Path, source_path: str | Path | None = None) -> None:
+        """Restore a crash-recovery copy as unsaved work tied to its original file when available."""
+        try:
+            project = load_project_from_pfp(snapshot_path)
+        except Exception as exc:
+            raise SessionError(f"Could not restore recovery snapshot: {exc}") from exc
+        target = Path(source_path) if source_path is not None and Path(source_path).exists() else None
+        self._replace(project, file_path=target, dirty=True)
+
     def save(self, path: str | Path | None = None) -> Path:
         """Save as a ``.pfp`` file. Uses the current file when ``path`` is omitted."""
         target = Path(path) if path is not None else self.file_path
@@ -210,6 +271,11 @@ class ProjectSession:
             raise SessionError(f"Could not save {target.name}: {exc}") from exc
         self.file_path = target
         self.dirty = False
+        saved_project = deepcopy(self.project)
+        saved_path = self.file_path
+        for snapshot in (*self._undo_stack, *self._redo_stack):
+            snapshot["dirty"] = not (snapshot["project"] == saved_project and snapshot["file_path"] == saved_path)
+        self._history_snapshot = self._capture_state()
         return target
 
     def preview_import(self, path: str | Path, format_id: str | None = None) -> ImportResult:
@@ -264,11 +330,13 @@ class ProjectSession:
         self._normalize_hierarchy()
         self.file_path = file_path
         self.dirty = dirty
+        self._record_history_change()
 
     def _changed(self) -> None:
         self._normalize_hierarchy()
         schedule_project(self.project)
         self.dirty = True
+        self._record_history_change()
 
     # ------------------------------------------------------------------
     # Task hierarchy

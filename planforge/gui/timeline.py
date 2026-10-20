@@ -10,7 +10,9 @@ from __future__ import annotations
 import tkinter as tk
 from datetime import date, timedelta
 from tkinter import ttk
+from typing import Any
 
+from planforge.config import format_date, get_preference, set_preference
 from planforge.gui.views import BaseView
 from planforge.scheduling.engine import is_working_day
 from planforge.session import DEPENDENCY_TYPES
@@ -27,7 +29,9 @@ class TimelineView(BaseView):
     def _build(self) -> None:
         self._title("Timeline & Gantt Chart", "Red bars are on the critical path. Arrows show dependencies.")
         bar = self._toolbar()
-        self.zoom_var = tk.StringVar(value="Days")
+        saved_zoom = get_preference("workspace", "timeline_zoom", "Days")
+        self.zoom_var = tk.StringVar(value=saved_zoom if saved_zoom in ZOOM_PIXELS_PER_DAY else "Days")
+        self.zoom_var.trace_add("write", self._save_zoom_preference)
         for name in ZOOM_PIXELS_PER_DAY:
             ttk.Radiobutton(bar, text=name, value=name, variable=self.zoom_var,
                             command=self.refresh, style="TRadiobutton").pack(side="left", padx=(0, 8))
@@ -52,6 +56,22 @@ class TimelineView(BaseView):
             widget.bind("<Button-4>", self._on_wheel)
             widget.bind("<Button-5>", self._on_wheel)
         self.chart.bind("<Shift-MouseWheel>", self._on_hwheel)
+        self.context_menu = tk.Menu(self, tearoff=False)
+        self.context_menu.add_command(label="Edit Task…", command=self._edit_context_task)
+        self.context_menu.add_command(label="Show in Task List", command=self._show_context_task)
+        self.chart.bind("<Button-3>", self._show_context_menu)
+        self.chart.bind("<Control-Button-1>", self._show_context_menu)
+        self._context_task_id: str | None = None
+
+    # --- persistent workspace preference
+
+    def _save_zoom_preference(self, *_args: Any) -> None:
+        zoom = self.zoom_var.get()
+        if zoom in ZOOM_PIXELS_PER_DAY:
+            try:
+                set_preference("workspace", "timeline_zoom", zoom)
+            except OSError:
+                pass
 
     # --- scrolling
 
@@ -76,6 +96,26 @@ class TimelineView(BaseView):
     def _on_hwheel(self, event: tk.Event) -> str:
         self.chart.xview("scroll", -3 if event.delta > 0 else 3, "units")
         return "break"
+
+    def _show_context_menu(self, event: tk.Event) -> str:
+        y = self.chart.canvasy(event.y)
+        index = int((y - HEADER_HEIGHT) // ROW_HEIGHT)
+        rows = self.session.task_rows()
+        if index < 0 or index >= len(rows):
+            return "break"
+        self._context_task_id = rows[index].task.id
+        self.context_menu.tk_popup(event.x_root, event.y_root)
+        self.context_menu.grab_release()
+        return "break"
+
+    def _edit_context_task(self) -> None:
+        if self._context_task_id:
+            self.app.views["tasks"].edit_task_by_id(self._context_task_id)
+
+    def _show_context_task(self) -> None:
+        if self._context_task_id:
+            self.app.views["tasks"].select_task_by_id(self._context_task_id)
+            self.app.select_tab_by_key("tasks")
 
     # --- drawing
 
@@ -251,7 +291,7 @@ class TimelineView(BaseView):
                 x = (day - start).days * ppd
                 c.create_line(x, HEADER_HEIGHT - 16, x, HEADER_HEIGHT, fill=p["muted"])
                 c.create_text(x + 4, 16, anchor="w", fill=p["text"], font=("Helvetica", 9, "bold"),
-                              text=day.strftime("%d %b %Y"))
+                              text=format_date(day))
                 c.create_text(x + 4, 34, anchor="w", fill=p["muted"], font=("Helvetica", 8),
                               text="week")
                 day += timedelta(days=7)
