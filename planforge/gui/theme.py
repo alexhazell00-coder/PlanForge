@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import tkinter as tk
 from tkinter import ttk
 
@@ -54,14 +58,116 @@ PALETTES: dict[str, dict[str, str]] = {
     },
 }
 
+# Keep the original Light and Dark palettes stable for existing users while
+# providing a few carefully bounded alternatives. Canvas-based views consume
+# the same keys as ttk widgets, so each palette supplies the complete set.
+PALETTES["midnight"] = {
+    **PALETTES["dark"],
+    "bg": "#090d18",
+    "panel": "#111827",
+    "text": "#e5e7eb",
+    "muted": "#9ca3af",
+    "border": "#273449",
+    "accent": "#8b5cf6",
+    "bar": "#4c3a80",
+    "bar_done": "#8b5cf6",
+    "weekend": "#101625",
+    "grid": "#263247",
+    "row_alt": "#0d1422",
+    "select": "#30234f",
+}
+PALETTES["high_contrast"] = {
+    **PALETTES["dark"],
+    "bg": "#000000",
+    "panel": "#000000",
+    "text": "#ffffff",
+    "muted": "#e5e5e5",
+    "border": "#ffffff",
+    "accent": "#ffff00",
+    "accent_text": "#000000",
+    "danger": "#ff6b6b",
+    "success": "#00ff7f",
+    "bar": "#00bfff",
+    "bar_done": "#00ff7f",
+    "bar_critical": "#ff3030",
+    "bar_critical_done": "#ff6b6b",
+    "summary": "#ffff00",
+    "milestone": "#ff8c00",
+    "weekend": "#171717",
+    "grid": "#666666",
+    "row_alt": "#111111",
+    "link": "#ffffff",
+    "today": "#ff3030",
+    "select": "#343400",
+}
+PALETTES["classic"] = {
+    **PALETTES["light"],
+    "bg": "#e9e7df",
+    "panel": "#f7f6f0",
+    "text": "#282820",
+    "muted": "#626157",
+    "border": "#b7b4a8",
+    "accent": "#315f52",
+    "accent_text": "#ffffff",
+    "bar": "#a7c3b4",
+    "bar_done": "#315f52",
+    "bar_critical": "#d58b7b",
+    "bar_critical_done": "#a33d32",
+    "summary": "#315f52",
+    "milestone": "#b27a24",
+    "weekend": "#e4e2d9",
+    "grid": "#d0cec4",
+    "row_alt": "#efeee8",
+    "link": "#626157",
+    "today": "#a33d32",
+    "select": "#d7e4dc",
+}
+
+
+def system_theme_name() -> str:
+    """Best-effort offline light/dark detection with safe fallbacks per OS."""
+    if sys.platform.startswith("win"):
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+                value, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return "light" if int(value) else "dark"
+        except (ImportError, OSError, ValueError):
+            return "light"
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                                    capture_output=True, text=True, timeout=1, check=False)
+            return "dark" if result.returncode == 0 and result.stdout.strip().casefold() == "dark" else "light"
+        except (OSError, subprocess.TimeoutExpired):
+            return "light"
+    gtk_theme = os.environ.get("GTK_THEME", "").casefold()
+    if "dark" in gtk_theme:
+        return "dark"
+    color_scheme = os.environ.get("COLORFGBG", "")
+    if color_scheme.endswith(";0"):
+        return "dark"
+    gsettings = shutil.which("gsettings")
+    if gsettings:
+        try:
+            result = subprocess.run([gsettings, "get", "org.gnome.desktop.interface", "color-scheme"],
+                                    capture_output=True, text=True, timeout=1, check=False)
+            if result.returncode == 0 and "dark" in result.stdout.casefold():
+                return "dark"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return "light"
+
 
 def palette_for(theme: str) -> dict[str, str]:
-    return PALETTES.get(theme, PALETTES["light"])
+    """Return a copy so a view cannot mutate the shared built-in palette."""
+    return dict(PALETTES.get(theme, PALETTES["light"]))
 
 
-def apply_theme(root: tk.Misc, theme: str) -> dict[str, str]:
-    """Configure every ttk style for the chosen theme and return its palette."""
-    p = palette_for(theme)
+def apply_palette(root: tk.Misc, palette: dict[str, str]) -> dict[str, str]:
+    """Configure every ttk style for a validated palette and return a copy."""
+    p = dict(palette)
     root.configure(background=p["bg"])
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -123,4 +229,9 @@ def apply_theme(root: tk.Misc, theme: str) -> dict[str, str]:
     return p
 
 
-__all__ = ["PALETTES", "apply_theme", "palette_for"]
+def apply_theme(root: tk.Misc, theme: str) -> dict[str, str]:
+    """Configure ttk styles for a named built-in theme."""
+    return apply_palette(root, palette_for(theme))
+
+
+__all__ = ["PALETTES", "apply_palette", "apply_theme", "palette_for"]

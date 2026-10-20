@@ -50,8 +50,13 @@ and do the same thing.
   - **Function Point Calculator:** Built-in FP estimation with instant transfer to project tasks.
   - **Summary Report:** Readable text report with clipboard copy and `.txt` export.
   - **Project Settings:** Project metadata, start date, currency, and working calendars.
-  - **Light & Dark Theme:** Toggle with `Ctrl+T` or the toolbar; the choice is saved in `~/.config/PlanForge/PlanForge.conf`.
-  - **Keyboard Navigation:** `Ctrl+1` to `Ctrl+8` switch tabs, `Ctrl+N` new, `Ctrl+O` open, `Ctrl+S` save, `Ctrl+Shift+S` save as, `Ctrl+I` import, `Ctrl+E` export, `F5` recalculate.
+  - **Theme Library:** Choose System Default, Light, Dark, Midnight, High Contrast or Classic; duplicate and edit supported colors; import/export validated JSON themes locally. Theme choices persist per user and work offline.
+  - **Command Palette:** Search implemented commands with `Ctrl+Shift+P`; use arrow keys, Enter and Escape without the mouse.
+  - **Context Actions & Suggestions:** Right-click tasks or Gantt rows for relevant actions. The Overview suggests state-based next steps, which can be dismissed or hidden.
+  - **Workspace Preferences:** Persist Gantt zoom, task-column visibility, suggestion visibility, and ISO/UK/US/long date display independently from project data. Save named layouts with a tab, zoom, and column configuration.
+  - **Undo/Redo & Recovery:** Undo and redo up to 100 project changes. Local crash-recovery snapshots are offered on next launch and never overwrite the source project until explicitly saved.
+  - **Recent Projects:** Open the latest ten projects from File → Open Recent; clear the local history at any time.
+  - **Keyboard Navigation:** `Ctrl+1` to `Ctrl+0` switch tabs; remap New, Open, Save, Undo, and Redo key letters in Preferences. macOS uses Command for these shortcuts.
 - **No server, no browser:** PlanForge is a desktop application. Everything runs in one Python process with the standard library's Tkinter window.
 
 ---
