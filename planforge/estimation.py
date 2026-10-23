@@ -10,7 +10,19 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_FP_DIR = Path(__file__).resolve().parents[1] / "function-point-calculator" / "function-point-calculator-main"
+_ROOT_CANDIDATES = (
+    Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "_MEIPASS", None) else None,
+    Path(__file__).resolve().parents[1],
+)
+for _root in _ROOT_CANDIDATES:
+    if _root is not None:
+        _fp_candidate = _root / "function-point-calculator" / "function-point-calculator-main"
+        if _fp_candidate.is_dir():
+            _FP_DIR = _fp_candidate
+            break
+else:
+    _FP_DIR = Path(__file__).resolve().parents[1] / "function-point-calculator" / "function-point-calculator-main"
+
 if str(_FP_DIR) not in sys.path:
     sys.path.insert(0, str(_FP_DIR))
 

@@ -12,14 +12,18 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ## Start Here
 
-| System | Launch PlanForge |
-| --- | --- |
-| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
-| **Linux** | Run **`./PlanForgeLauncher.sh`** |
-| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
-| **Any system** | `python PlanForgeLauncher.py` (or `python3`) |
+### Run Directly or Install With Native Desktop Icon
 
-The launcher detects your operating system, prepares a project-local `.venv`,
+| System | Launch Now | Install App Shortcut / Menu Icon | Build Standalone Native App (No Python Needed) |
+| --- | --- | --- | --- |
+| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** (or **`PlanForge.exe`** from Releases/Actions) | Double-click **`InstallApp.bat`** *(creates Start Menu & Desktop shortcuts with `planforge.ico`)* | Double-click **`BuildApp.bat`** → `dist\PlanForge.exe` & `.zip` |
+| **macOS** | Double-click **`PlanForge.app`** (or **`PlanForge-macOS.dmg`** from Releases/Actions) | Double-click **`InstallApp.command`** *(installs `~/Applications/PlanForge.app` with Retina `planforge.icns`)* | Double-click **`BuildApp.command`** → `dist/PlanForge.app` & `.dmg` |
+| **Linux** | Run **`./PlanForgeLauncher.sh`** (or **`PlanForge-Linux-x86_64.AppImage`** from Releases/Actions) | Run **`./InstallApp.sh`** *(installs XDG app menu entry + `planforge.png` icons)* | Run **`./BuildApp.sh`** → `dist/PlanForge-Linux-x86_64.AppImage` & `.tar.gz` |
+| **Any system** | `python PlanForgeLauncher.py` (or `python3`) | `python packaging/install_desktop_app.py` | `python packaging/build_app.py --install-pyinstaller` |
+
+All native app icons (`planforge.ico` for Windows, Retina `planforge.icns` for macOS, multi-size `planforge.png` for Linux/XDG, plus live window titlebar/taskbar/dock icons) are generated directly from `docs/icon_transparent_background.png` using `python -m planforge.icons` (zero external dependencies) and compiled automatically on Windows, macOS, and Linux via GitHub Actions (`.github/workflows/build-apps.yml`).
+
+The launcher also detects your operating system, prepares a project-local `.venv`,
 installs any declared dependencies and starts the application. The older
 `run.bat`, `run.sh` and `run.command` files are kept as compatibility wrappers
 and do the same thing.

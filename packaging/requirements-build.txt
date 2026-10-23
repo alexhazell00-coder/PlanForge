@@ -1,0 +1,4 @@
+# Build-time dependencies for compiling standalone native PlanForge applications
+# (Windows .exe, macOS .app / .dmg, Linux binary / .AppImage).
+# Runtime PlanForge itself requires zero third-party packages.
+pyinstaller>=6.0,<7.0

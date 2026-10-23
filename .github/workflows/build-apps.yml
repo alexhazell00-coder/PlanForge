@@ -1,0 +1,115 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform_label: Windows
+            artifact_name: PlanForge-Windows-App
+            artifact_glob: |
+              dist/PlanForge.exe
+              dist/PlanForge-Windows-*.zip
+          - os: macos-latest
+            platform_label: macOS
+            artifact_name: PlanForge-macOS-App
+            artifact_glob: |
+              dist/PlanForge-macOS.dmg
+              dist/PlanForge-macOS.zip
+          - os: ubuntu-latest
+            platform_label: Linux
+            artifact_name: PlanForge-Linux-App
+            artifact_glob: |
+              dist/PlanForge-Linux-*.AppImage
+              dist/PlanForge-Linux-*.tar.gz
+
+    name: Build ${{ matrix.platform_label }} App
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 with Tkinter (Windows & macOS)
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Linux Python, Tkinter, libpython & AppImage tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv python3-pip python3-tk libpython3-dev file desktop-file-utils
+          python3 -m venv .build-venv
+          echo "$PWD/.build-venv/bin" >> "$GITHUB_PATH"
+          curl -fsSL --retry 3 -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: Run full test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Build native PlanForge desktop application with icon
+        run: python packaging/build_app.py --install-pyinstaller
+
+      - name: Smoke-test compiled native executable (CLI conversion check)
+        shell: bash
+        run: |
+          mkdir -p build
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./dist/PlanForge.exe --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
+            test -s build/smoke.json
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            ./dist/PlanForge.app/Contents/MacOS/PlanForge --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
+            test -s build/smoke.json
+          else
+            ./dist/PlanForge/PlanForge --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
+            test -s build/smoke.json
+            ./dist/PlanForge-Linux-x86_64.AppImage --appimage-extract-and-run --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke_appimage.json --export-format planforge-json
+            test -s build/smoke_appimage.json
+          fi
+
+      - name: Upload ${{ matrix.platform_label }} application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all native platform builds
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release with Windows, macOS & Linux apps
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" release-assets/* \
+              --title "PlanForge ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
