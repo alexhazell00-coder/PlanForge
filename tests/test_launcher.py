@@ -195,7 +195,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertTrue(launcher.needs_gui(["--export-file", "out.gan"]))
 
     def test_relative_paths_are_resolved_against_caller(self) -> None:
-        base = Path("/home/user/projects")
+        base = Path(tempfile.gettempdir()).resolve() / "projects"
         args = launcher.normalize_app_args(
             [
                 "--import-file",
@@ -212,14 +212,15 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(args[4:], ["--export-format", "ganttproject"])
 
     def test_project_path_and_equals_forms(self) -> None:
+        base = Path(tempfile.gettempdir()).resolve() / "base"
         args = launcher.normalize_app_args(
-            ["--import-file=in.xml", "project.pfp"], "/tmp/base"
+            ["--import-file=in.xml", "project.pfp"], base
         )
-        self.assertEqual(args[0], "--import-file=/tmp/base/in.xml")
-        self.assertEqual(args[1], "/tmp/base/project.pfp")
-        absolute = str(Path("/tmp/absolute.pfp"))
+        self.assertEqual(args[0], f"--import-file={base / 'in.xml'}")
+        self.assertEqual(args[1], str(base / "project.pfp"))
+        absolute = str(Path(tempfile.gettempdir()).resolve() / "absolute.pfp")
         self.assertEqual(
-            launcher.normalize_app_args([absolute], "/tmp/base"), [absolute]
+            launcher.normalize_app_args([absolute], base), [absolute]
         )
 
 
