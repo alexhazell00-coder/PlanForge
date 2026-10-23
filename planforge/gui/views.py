@@ -14,8 +14,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING, Any, Callable
 
 from planforge import estimation
-from planforge.config import format_date, get_preference, set_preference
-from planforge.gui.dialogs import FormDialog, FormField, TaskDialog
+from planforge.config import format_date, get_preference, parse_date_input, set_preference
+from planforge.gui.dialogs import FormDialog, FormField, ResourceDialog, TaskDialog
 from planforge.session import WEEKDAY_NAMES, SessionError, format_money
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -136,11 +136,11 @@ class OverviewView(BaseView):
             ("duration", "Duration", 80, "e"),
         ], tree_heading="Task", tree_width=300, height=10)
 
-        team_box = ttk.LabelFrame(lists, text="Team workload", padding=10)
+        team_box = ttk.LabelFrame(lists, text="Team & material costs", padding=10)
         team_box.grid(row=0, column=1, sticky="nsew")
         self.team = make_tree(team_box, [
-            ("tasks", "Tasks", 60, "e"), ("hours", "Hours", 80, "e"), ("cost", "Cost", 110, "e"),
-        ], tree_heading="Person", tree_width=200, height=10)
+            ("tasks", "Tasks", 60, "e"), ("hours", "Hours / Qty", 90, "e"), ("cost", "Cost", 110, "e"),
+        ], tree_heading="Resource", tree_width=200, height=10)
         lists.rowconfigure(0, weight=1)
 
     def _toggle_suggestions(self) -> None:
@@ -214,8 +214,13 @@ class OverviewView(BaseView):
 
         self.team.delete(*self.team.get_children())
         for w in self.session.person_workloads():
+            usage = (
+                f"{w.units_total:g}" + (f" {w.material_label}" if w.material_label else "")
+                if w.resource_type != "work"
+                else f"{w.hours:,.1f} h"
+            )
             self.team.insert("", "end", text=w.name, values=(
-                w.task_count, f"{w.hours:,.1f}", format_money(w.cost, ov.currency),
+                w.task_count, usage, format_money(w.cost, ov.currency),
             ))
 
 
@@ -399,7 +404,7 @@ class TasksView(BaseView):
             if task.milestone or task.task_type == "milestone":
                 tags.append("milestone")
             duration = "milestone" if (task.milestone or task.task_type == "milestone") else f"{(task.duration or 0):g} d"
-            people = self.session.assigned_resource_of(task.id)
+            res_summary = self.session.task_resource_names(task.id)
             cost = format_money(task.estimated_cost, self.session.project.currency) if task.estimated_cost else ""
             # With a search active the list is flat, so indentation is shown in the name instead.
             parent = task.parent_id if (task.parent_id and not needle) else ""
@@ -407,7 +412,7 @@ class TasksView(BaseView):
             self.tree.insert(parent, "end", iid=task.id, text=text, open=True, tags=tuple(tags), values=(
                 duration, _iso(task.start_date), _iso(task.finish_date),
                 f"{task.percent_complete:.0f}%", self.session.predecessor_names(task.id),
-                people.name if people else "", cost,
+                res_summary, cost,
             ))
             visible_count += 1
         if not visible_count:
@@ -421,26 +426,45 @@ class TasksView(BaseView):
 
 
 # ----------------------------------------------------------------------
-# People
+# People & Materials (Resource Sheet)
 # ----------------------------------------------------------------------
 
 class PeopleView(BaseView):
     def _build(self) -> None:
-        self._title("People & Team Resources", "Rates and daily hours drive costs and scheduling capacity.")
+        self._title(
+            "People & Materials",
+            "Team roles (Work) and equipment/consumables (Material) with hierarchy, units and rates.",
+        )
         bar = self._toolbar()
         ttk.Button(bar, text="+ Add Person", style="Accent.TButton", command=self._add).pack(side="left")
-        ttk.Button(bar, text="Edit", command=self._edit).pack(side="left", padx=6)
-        ttk.Button(bar, text="Delete", command=self._delete).pack(side="left")
+        ttk.Button(bar, text="+ Add Material", command=self._add_material).pack(side="left", padx=6)
+        ttk.Button(bar, text="Indent", command=self._indent).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Outdent", command=self._outdent).pack(side="left", padx=6)
+        ttk.Button(bar, text="Edit", command=self._edit).pack(side="left")
+        ttk.Button(bar, text="Delete", command=self._delete).pack(side="left", padx=(6, 0))
         self.empty_label = ttk.Label(self, text="", style="Muted.TLabel")
         self.empty_label.pack(anchor="w", pady=(0, 4))
         self.tree = make_tree(self, [
-            ("rate", "Rate / hour", 120, "e"), ("hours", "Hours / day", 100, "e"),
-            ("tasks", "Tasks", 70, "e"), ("total", "Total hours", 110, "e"),
-            ("cost", "Total cost", 120, "e"),
-        ], tree_heading="Name", tree_width=300, height=16)
+            ("role", "Role / Group", 190, "w"),
+            ("type", "Type", 85, "w"),
+            ("material_label", "Material Label", 105, "w"),
+            ("initials", "Initials", 65, "w"),
+            ("max_units", "Max. Units", 90, "e"),
+            ("rate", "Standard Rate", 130, "e"),
+            ("tasks", "Tasks", 65, "e"),
+            ("cost", "Total Cost", 120, "e"),
+        ], tree_heading="Resource Name", tree_width=260, height=16)
         self.tree.bind("<Double-1>", lambda _e: self._edit())
+        self.tree.bind("<Return>", lambda _e: self._edit())
+        self.tree.bind("<Delete>", lambda _e: self._delete())
         self.context_menu = tk.Menu(self, tearoff=False)
         self.context_menu.add_command(label="Edit Resource…", command=self._edit)
+        self.context_menu.add_command(label="Add Sub-item (Person)…", command=lambda: self._add(under_selected=True))
+        self.context_menu.add_command(label="Add Sub-item (Material)…", command=lambda: self._add_material(under_selected=True))
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Indent", command=self._indent)
+        self.context_menu.add_command(label="Outdent", command=self._outdent)
+        self.context_menu.add_separator()
         self.context_menu.add_command(label="Remove Resource…", command=self._delete)
         self.tree.bind("<Button-3>", self._show_context_menu)
         self.tree.bind("<Control-Button-1>", self._show_context_menu)
@@ -457,37 +481,38 @@ class PeopleView(BaseView):
         selection = self.tree.selection()
         return selection[0] if selection else None
 
-    def _person_fields(self, name: str = "", rate: float | None = None, hours: float | None = None) -> list[FormField]:
-        return [
-            FormField("name", "Name", name),
-            FormField("rate", f"Hourly rate ({self.session.project.currency})",
-                      "" if rate is None else f"{rate:g}"),
-            FormField("hours", "Hours per day", "8" if hours is None else f"{hours:g}"),
-        ]
-
-    def _add(self) -> None:
-        def submit(values: dict[str, str]) -> None:
-            self.session.add_person(values["name"], _num(values, "rate", "Hourly rate", minimum=0),
-                                    _num(values, "hours", "Hours per day", minimum=0, strict=True))
-
-        dialog = FormDialog(self.app, "Add Team Member", self._person_fields(), submit)
+    def _add(self, *, under_selected: bool = False) -> None:
+        parent_id = self._selected() if under_selected else None
+        dialog = ResourceDialog(self.app, self.session, default_type="work", default_parent_id=parent_id)
         if dialog.show():
             self.app.refresh_all()
+
+    def _add_material(self, *, under_selected: bool = False) -> None:
+        parent_id = self._selected() if under_selected else None
+        dialog = ResourceDialog(self.app, self.session, default_type="material", default_parent_id=parent_id)
+        if dialog.show():
+            self.app.refresh_all()
+
+    def _indent(self) -> None:
+        resource_id = self._selected()
+        if resource_id is None:
+            messagebox.showinfo("Select a resource", "Select a person or material first.", parent=self.app)
+            return
+        self.app.perform(self.session.indent_resource, resource_id)
+
+    def _outdent(self) -> None:
+        resource_id = self._selected()
+        if resource_id is None:
+            messagebox.showinfo("Select a resource", "Select a person or material first.", parent=self.app)
+            return
+        self.app.perform(self.session.outdent_resource, resource_id)
 
     def _edit(self) -> None:
         resource_id = self._selected()
         if resource_id is None:
-            messagebox.showinfo("Select a person", "Select a person first.", parent=self.app)
+            messagebox.showinfo("Select a resource", "Select a person or material first.", parent=self.app)
             return
-        resource = self.session.find_resource(resource_id)
-        hours = resource.custom_fields.get("hours_per_day", 8)
-
-        def submit(values: dict[str, str]) -> None:
-            self.session.update_person(resource_id, values["name"], _num(values, "rate", "Hourly rate", minimum=0),
-                                       _num(values, "hours", "Hours per day", minimum=0, strict=True))
-
-        dialog = FormDialog(self.app, "Edit Team Member",
-                            self._person_fields(resource.name, resource.standard_rate, float(hours)), submit)
+        dialog = ResourceDialog(self.app, self.session, resource_id=resource_id)
         if dialog.show():
             self.app.refresh_all()
 
@@ -496,21 +521,47 @@ class PeopleView(BaseView):
         if resource_id is None:
             return
         resource = self.session.find_resource(resource_id)
-        if messagebox.askyesno("Delete person", f"Remove {resource.name}? Their task assignments will be removed too.",
+        if messagebox.askyesno("Delete resource", f"Remove {resource.name}? Any assignments for it will be removed too.",
                                parent=self.app):
             self.app.perform(self.session.delete_person, resource_id)
 
     def refresh(self) -> None:
+        p = self.app.palette
         selected = self._selected()
+        self.tree.tag_configure("summary", font=("Helvetica", 10, "bold"))
+        self.tree.tag_configure("material", foreground=p.get("accent", p["text"]))
         self.tree.delete(*self.tree.get_children())
         currency = self.session.project.currency
         workloads = self.session.person_workloads()
         for w in workloads:
-            self.tree.insert("", "end", iid=w.resource_id, text=w.name, values=(
-                format_money(w.rate or 0.0, currency) if w.rate is not None else "not set",
-                f"{w.hours_per_day:g}", w.task_count, f"{w.hours:,.1f}", format_money(w.cost, currency),
+            is_material = w.resource_type != "work"
+            type_label = "Material" if w.resource_type == "material" else ("Cost" if w.resource_type == "cost" else "Work")
+            max_u = "" if is_material else f"{w.max_units * 100:.0f}%"
+            if w.rate is None:
+                rate_str = "not set"
+            elif is_material:
+                rate_str = format_money(w.rate, currency)
+            else:
+                rate_str = f"{format_money(w.rate, currency)}/hour"
+            tags: list[str] = []
+            if w.is_summary:
+                tags.append("summary")
+            if is_material:
+                tags.append("material")
+            parent_iid = w.parent_id if (w.parent_id and self.tree.exists(w.parent_id)) else ""
+            self.tree.insert(parent_iid, "end", iid=w.resource_id, text=w.name, open=True, tags=tuple(tags), values=(
+                w.group,
+                type_label,
+                w.material_label if is_material else "",
+                w.initials,
+                max_u,
+                rate_str,
+                w.task_count,
+                format_money(w.cost, currency),
             ))
-        self.empty_label.configure(text="" if workloads else "No team members yet — add a person to plan workload and costs.")
+        self.empty_label.configure(
+            text="" if workloads else "No resources yet — add a person or material item to plan workload and costs."
+        )
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
 
@@ -521,11 +572,16 @@ class PeopleView(BaseView):
 
 class CostsView(BaseView):
     def _build(self) -> None:
-        self._title("Costs & Workload Analysis", "Labour cost is hours assigned multiplied by each person's rate.")
+        self._title("Costs & Workload Analysis", "Labour (hourly work) and Material (unit/equipment) cost breakdown.")
         cards = ttk.Frame(self)
         cards.pack(fill="x")
         self.cards: dict[str, tk.StringVar] = {}
-        for index, caption in enumerate(["Estimated task cost", "Estimated task hours", "Assigned labour cost"]):
+        for index, caption in enumerate([
+            "Estimated task cost",
+            "Assigned labour cost",
+            "Material cost",
+            "Estimated task hours",
+        ]):
             card = ttk.Frame(cards, style="Card.TFrame", padding=(14, 10))
             card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 8, 0))
             cards.columnconfigure(index, weight=1)
@@ -535,11 +591,15 @@ class CostsView(BaseView):
             ttk.Label(card, text=caption, style="PanelMuted.TLabel").pack(anchor="w")
 
         self.tree = make_tree(self, [
-            ("rate", "Rate / hour", 110, "e"), ("tasks", "Tasks", 70, "e"),
-            ("hours", "Hours", 100, "e"), ("cost", "Cost", 120, "e"), ("share", "Share", 80, "e"),
-        ], tree_heading="Person", tree_width=240, height=8)
+            ("type", "Type", 85, "w"),
+            ("rate", "Standard Rate", 125, "e"),
+            ("tasks", "Tasks", 65, "e"),
+            ("usage", "Hours / Qty", 110, "e"),
+            ("cost", "Cost", 120, "e"),
+            ("share", "Share", 75, "e"),
+        ], tree_heading="Resource", tree_width=240, height=8)
 
-        chart_box = ttk.LabelFrame(self, text="Cost by person", padding=8)
+        chart_box = ttk.LabelFrame(self, text="Cost by resource (people & materials)", padding=8)
         chart_box.pack(fill="both", expand=True, pady=(12, 0))
         self.chart = tk.Canvas(chart_box, height=180, highlightthickness=0)
         self.chart.pack(fill="both", expand=True)
@@ -552,15 +612,34 @@ class CostsView(BaseView):
         self.cards["Estimated task cost"].set(format_money(ov.total_cost, currency))
         self.cards["Estimated task hours"].set(f"{ov.total_hours:,.1f} h")
         self._workloads = self.session.person_workloads()
-        total_cost = sum(w.cost for w in self._workloads)
-        self.cards["Assigned labour cost"].set(format_money(total_cost, currency))
+        labour_cost = sum(w.cost for w in self._workloads if w.resource_type == "work")
+        material_cost = sum(w.cost for w in self._workloads if w.resource_type != "work")
+        total_cost = labour_cost + material_cost
+        self.cards["Assigned labour cost"].set(format_money(labour_cost, currency))
+        self.cards["Material cost"].set(format_money(material_cost, currency))
 
         self.tree.delete(*self.tree.get_children())
         for w in self._workloads:
+            is_material = w.resource_type != "work"
+            type_lbl = "Material" if w.resource_type == "material" else ("Cost" if w.resource_type == "cost" else "Work")
+            rate_txt = (
+                "not set"
+                if w.rate is None
+                else (format_money(w.rate, currency) if is_material else f"{format_money(w.rate, currency)}/hour")
+            )
+            usage_txt = (
+                f"{w.units_total:g}" + (f" {w.material_label}" if w.material_label else "")
+                if is_material
+                else f"{w.hours:,.1f} h"
+            )
             share = (w.cost / total_cost * 100) if total_cost else 0.0
             self.tree.insert("", "end", text=w.name, values=(
-                format_money(w.rate or 0.0, currency) if w.rate is not None else "not set",
-                w.task_count, f"{w.hours:,.1f}", format_money(w.cost, currency), f"{share:.0f}%",
+                type_lbl,
+                rate_txt,
+                w.task_count,
+                usage_txt,
+                format_money(w.cost, currency),
+                f"{share:.0f}%",
             ))
         self._draw_chart()
 
@@ -866,11 +945,14 @@ class SettingsView(BaseView):
         self.day_vars = [tk.BooleanVar(value=False) for _ in WEEKDAY_NAMES]
         self._modified = False
         self._loading = False
+        self._loaded_project_id: str | None = None
         for var in (self.name_var, self.start_var, self.currency_var, *self.day_vars):
             var.trace_add("write", lambda *_a: self._mark_modified())
 
         ttk.Label(form, text="Project name").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=6)
-        ttk.Entry(form, textvariable=self.name_var, width=50).grid(row=0, column=1, sticky="ew", pady=6)
+        name_entry = ttk.Entry(form, textvariable=self.name_var, width=50)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=6)
+        name_entry.bind("<Return>", lambda _e: self._apply())
 
         ttk.Label(form, text="Description").grid(row=1, column=0, sticky="nw", padx=(0, 12), pady=6)
         self.description = tk.Text(form, height=3, width=50, wrap="word", relief="solid", borderwidth=1)
@@ -878,7 +960,14 @@ class SettingsView(BaseView):
         self.description.bind("<<Modified>>", self._on_text_modified)
 
         ttk.Label(form, text="Start date (YYYY-MM-DD)").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
-        ttk.Entry(form, textvariable=self.start_var, width=16).grid(row=2, column=1, sticky="w", pady=6)
+        start_row = ttk.Frame(form)
+        start_row.grid(row=2, column=1, sticky="w", pady=6)
+        self.start_entry = ttk.Entry(start_row, textvariable=self.start_var, width=16)
+        self.start_entry.pack(side="left")
+        self.start_entry.bind("<Return>", lambda _e: self._apply())
+        ttk.Button(start_row, text="Today", command=lambda: self.start_var.set(date.today().isoformat())).pack(
+            side="left", padx=(6, 0)
+        )
 
         ttk.Label(form, text="Currency").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=6)
         ttk.Combobox(form, textvariable=self.currency_var, state="readonly", width=10,
@@ -890,7 +979,11 @@ class SettingsView(BaseView):
         for index, (name, var) in enumerate(zip(WEEKDAY_NAMES, self.day_vars)):
             ttk.Checkbutton(days, text=name, variable=var).pack(side="left", padx=(0, 10))
 
-        ttk.Button(self, text="Apply Changes", style="Accent.TButton", command=self._apply).pack(anchor="w", pady=16)
+        action_bar = ttk.Frame(self)
+        action_bar.pack(anchor="w", pady=16)
+        ttk.Button(action_bar, text="Apply Changes", style="Accent.TButton", command=self._apply).pack(side="left")
+        self.feedback_var = tk.StringVar(value="")
+        ttk.Label(action_bar, textvariable=self.feedback_var, style="Muted.TLabel").pack(side="left", padx=(12, 0))
         ttk.Label(self, style="Muted.TLabel", text=(
             "Changing the start date or working days reschedules every task. "
             "Appearance and workspace preferences are stored separately in your per-user settings.")
@@ -902,16 +995,18 @@ class SettingsView(BaseView):
         return CURRENCIES
 
     def on_show(self) -> None:
-        self._load()
+        if not self._modified or self._loaded_project_id != self.session.project.id:
+            self._load()
 
     def refresh(self) -> None:
-        # Keep unsaved typing: reload from the project only when the form has no edits.
-        if not self._modified:
+        # Reload whenever there are no unsaved form edits or another project was opened.
+        if not self._modified or self._loaded_project_id != self.session.project.id:
             self._load()
 
     def _mark_modified(self) -> None:
         if not self._loading:
             self._modified = True
+            self.feedback_var.set("")
 
     def _on_text_modified(self, _event: Any = None) -> None:
         if self.description.edit_modified():
@@ -931,22 +1026,45 @@ class SettingsView(BaseView):
             working = set(p.calendars[0].working_days) if p.calendars else {0, 1, 2, 3, 4}
             for index, var in enumerate(self.day_vars):
                 var.set(index in working)
+            self._loaded_project_id = p.id
         finally:
             self._loading = False
         self._modified = False
 
-    def _apply(self) -> None:
+    def commit_pending(self, *, show_errors: bool = False) -> bool:
+        """Apply unsaved form edits when switching tabs or saving the project."""
+        if not self._modified or self._loaded_project_id != self.session.project.id:
+            return True
+        return self._apply(show_errors=show_errors)
+
+    def _apply(self, *, show_errors: bool = True) -> bool:
         start_text = self.start_var.get().strip()
         try:
-            start = date.fromisoformat(start_text) if start_text else None
+            start = parse_date_input(start_text)
         except ValueError:
-            messagebox.showerror("Check the start date", "Start date must look like 2026-10-19.", parent=self.app)
-            return
+            if show_errors:
+                messagebox.showerror(
+                    "Check the start date",
+                    "Enter a valid date such as 2026-10-19 or DD/MM/YYYY.",
+                    parent=self.app,
+                )
+            return False
         working = [index for index, var in enumerate(self.day_vars) if var.get()]
-        if self.app.perform(self.session.update_settings, name=self.name_var.get(),
-                            description=self.description.get("1.0", "end").strip(),
-                            start_date=start, currency=self.currency_var.get(), working_days=working):
-            self._modified = False
+        self._modified = False
+        if not self.app.perform(
+            self.session.update_settings,
+            name=self.name_var.get(),
+            description=self.description.get("1.0", "end").strip(),
+            start_date=start,
+            currency=self.currency_var.get(),
+            working_days=working,
+            show_errors=show_errors,
+        ):
+            self._modified = True
+            return False
+        shown_date = format_date(self.session.project.start_date) or "not set"
+        self.feedback_var.set(f"Applied — start date: {shown_date}")
+        return True
 
 
 __all__ = [

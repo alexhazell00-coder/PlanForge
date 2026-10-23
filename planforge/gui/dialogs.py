@@ -7,18 +7,21 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
+from planforge.config import parse_date_input
 from planforge.session import (
     DEPENDENCY_LABELS,
     DEPENDENCY_TYPES,
     ProjectSession,
     SessionError,
     TaskEdit,
+    _UNSET_DATE,
     format_money,
     hours_per_point,
 )
 
 NO_PREDECESSOR = "(none)"
 UNASSIGNED = "(unassigned)"
+TOP_LEVEL = "(top level)"
 MANUAL = "Manual duration"
 FUNCTION_POINTS = "Function points"
 
@@ -111,8 +114,195 @@ class FormDialog(_BaseDialog):
         self.destroy()
 
 
+class ResourceDialog(_BaseDialog):
+    """Create or edit a Work person/group or Material item matching ProjectLibre's Resource Sheet."""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        session: ProjectSession,
+        resource_id: str | None = None,
+        *,
+        default_type: str = "work",
+        default_parent_id: str | None = None,
+    ) -> None:
+        existing = session.find_resource(resource_id) if resource_id is not None else None
+        title = (
+            "Edit Resource"
+            if existing is not None
+            else ("Add Material" if default_type == "material" else "Add Person / Resource")
+        )
+        super().__init__(parent, title)
+        self.session = session
+        self.resource_id = resource_id
+
+        init_type = existing.resource_type if existing is not None else default_type
+        if init_type not in {"work", "material"}:
+            init_type = "material"
+
+        # Exclude self and descendants from parent choices to prevent cycles
+        excluded: set[str] = set()
+        if resource_id is not None:
+            excluded.add(resource_id)
+            changed = True
+            while changed:
+                changed = False
+                for r in session.project.resources:
+                    if r.custom_fields.get("parent_id") in excluded and r.id not in excluded:
+                        excluded.add(r.id)
+                        changed = True
+
+        self._parent_choices: dict[str, str] = {}
+        for r in session.project.resources:
+            if r.id in excluded:
+                continue
+            label_key = r.name if r.name not in self._parent_choices else f"{r.name} ({r.id[:6]})"
+            self._parent_choices[label_key] = r.id
+
+        cur_parent_id = (
+            str(existing.custom_fields["parent_id"])
+            if (existing is not None and isinstance(existing.custom_fields.get("parent_id"), str))
+            else default_parent_id
+        )
+        init_parent_label = next(
+            (lbl for lbl, rid in self._parent_choices.items() if rid == cur_parent_id),
+            TOP_LEVEL,
+        )
+
+        row = 0
+
+        def add_row(caption: str, widget: tk.Widget) -> ttk.Label:
+            nonlocal row
+            lbl = ttk.Label(self.body, text=caption)
+            lbl.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=4)
+            widget.grid(row=row, column=1, sticky="ew", pady=4)
+            row += 1
+            return lbl
+
+        type_frame = ttk.Frame(self.body)
+        self.type_var = tk.StringVar(value=init_type)
+        ttk.Radiobutton(type_frame, text="Work (Person / Role)", value="work", variable=self.type_var,
+                        command=self._sync_type_fields).pack(side="left")
+        ttk.Radiobutton(type_frame, text="Material (Hardware / Consumable)", value="material",
+                        variable=self.type_var, command=self._sync_type_fields).pack(side="left", padx=(14, 0))
+        add_row("Resource type", type_frame)
+
+        self.name_var = tk.StringVar(value=existing.name if existing else "")
+        name_entry = ttk.Entry(self.body, textvariable=self.name_var, width=38)
+        add_row("Name", name_entry)
+
+        init_group = str(existing.custom_fields.get("group") or "") if existing else ""
+        self.group_var = tk.StringVar(value=init_group)
+        add_row("Role / Group", ttk.Entry(self.body, textvariable=self.group_var, width=38))
+
+        init_mat_label = str(existing.custom_fields.get("material_label") or "") if existing else ""
+        self.material_label_var = tk.StringVar(value=init_mat_label)
+        self.material_label_entry = ttk.Entry(self.body, textvariable=self.material_label_var, width=22)
+        self.material_label_caption = add_row("Material label / unit", self.material_label_entry)
+
+        init_initials = str(existing.custom_fields.get("initials") or "") if existing else ""
+        self.initials_var = tk.StringVar(value=init_initials)
+        self._initials_manual = bool(init_initials)
+        add_row("Initials", ttk.Entry(self.body, textvariable=self.initials_var, width=10))
+        self.name_var.trace_add("write", self._on_name_changed)
+
+        init_rate = (
+            f"{existing.standard_rate:g}"
+            if (existing is not None and existing.standard_rate is not None)
+            else "0"
+        )
+        self.rate_var = tk.StringVar(value=init_rate)
+        self.rate_label = add_row(
+            f"Standard rate ({session.project.currency}/hour)",
+            ttk.Entry(self.body, textvariable=self.rate_var, width=16),
+        )
+
+        init_max_pct = f"{(existing.max_units * 100):g}" if existing is not None else "100"
+        self.max_units_var = tk.StringVar(value=init_max_pct)
+        self.max_units_entry = ttk.Entry(self.body, textvariable=self.max_units_var, width=12)
+        add_row("Max. units (%)", self.max_units_entry)
+
+        init_hours = f"{float(existing.custom_fields.get('hours_per_day', 8)):g}" if existing else "8"
+        self.hours_var = tk.StringVar(value=init_hours)
+        self.hours_entry = ttk.Entry(self.body, textvariable=self.hours_var, width=12)
+        add_row("Hours per day", self.hours_entry)
+
+        self.parent_var = tk.StringVar(value=init_parent_label)
+        add_row(
+            "Group under",
+            ttk.Combobox(
+                self.body,
+                textvariable=self.parent_var,
+                state="readonly",
+                width=36,
+                values=[TOP_LEVEL, *self._parent_choices.keys()],
+            ),
+        )
+
+        self.body.columnconfigure(1, weight=1)
+        self._sync_type_fields()
+        name_entry.focus_set()
+
+    def _on_name_changed(self, *_args: object) -> None:
+        if not self._initials_manual:
+            txt = self.name_var.get().strip()
+            self.initials_var.set(txt[:1] if txt else "")
+
+    def _sync_type_fields(self) -> None:
+        currency = self.session.project.currency
+        is_material = self.type_var.get() == "material"
+        if is_material:
+            self.rate_label.configure(text=f"Standard rate / unit cost ({currency})")
+            self.material_label_entry.configure(state="normal")
+            self.max_units_entry.configure(state="disabled")
+            self.hours_entry.configure(state="disabled")
+        else:
+            self.rate_label.configure(text=f"Standard rate ({currency}/hour)")
+            self.material_label_entry.configure(state="disabled")
+            self.max_units_entry.configure(state="normal")
+            self.hours_entry.configure(state="normal")
+
+    def on_ok(self) -> None:
+        rtype = self.type_var.get()
+        try:
+            rate = _parse_number(self.rate_var.get() or "0", "Standard rate", allow_zero=True)
+            hours = 8.0 if rtype == "material" else _parse_number(self.hours_var.get(), "Hours per day", allow_zero=False)
+            max_pct = 100.0 if rtype == "material" else _parse_number(self.max_units_var.get() or "100", "Max. units", allow_zero=True)
+            parent_id = self._parent_choices.get(self.parent_var.get()) if self.parent_var.get() != TOP_LEVEL else None
+            if self.resource_id is None:
+                self.session.add_person(
+                    self.name_var.get(),
+                    rate,
+                    hours,
+                    resource_type=rtype,
+                    group=self.group_var.get(),
+                    material_label=self.material_label_var.get() if rtype == "material" else "",
+                    initials=self.initials_var.get(),
+                    max_units=max_pct / 100.0,
+                    parent_id=parent_id,
+                )
+            else:
+                self.session.update_person(
+                    self.resource_id,
+                    self.name_var.get(),
+                    rate,
+                    hours,
+                    resource_type=rtype,
+                    group=self.group_var.get(),
+                    material_label=self.material_label_var.get() if rtype == "material" else "",
+                    initials=self.initials_var.get(),
+                    max_units=max_pct / 100.0,
+                    parent_id=parent_id,
+                )
+        except (SessionError, ValueError) as exc:
+            self.fail(str(exc))
+            return
+        self.result = True
+        self.destroy()
+
+
 class TaskDialog(_BaseDialog):
-    """Edit one task: name, schedule, predecessor, person and estimate."""
+    """Edit one task: name, schedule, predecessor, person, materials and estimate."""
 
     def __init__(self, parent: tk.Misc, session: ProjectSession, task_id: str) -> None:
         task = session.find_task(task_id)
@@ -121,7 +311,11 @@ class TaskDialog(_BaseDialog):
         self.task_id = task_id
         self.deleted = False
         resources = session.project.resources
-        self._resource_ids = {r.name: r.id for r in resources}
+        self._resource_ids = {r.name: r.id for r in resources if r.resource_type == "work"}
+        self._material_ids = {r.name: r.id for r in resources if r.resource_type != "work"}
+        self._material_items: list[tuple[str, float]] = [
+            (res.id, assign.units) for res, assign in session.material_assignments_of(task_id)
+        ]
         self._other_tasks = {t.name: t.id for t in session.project.tasks if t.id != task_id}
 
         row = 0
@@ -146,6 +340,25 @@ class TaskDialog(_BaseDialog):
         self.milestone_var = tk.BooleanVar(value=bool(task.milestone))
         label("Milestone")
         place(ttk.Checkbutton(self.body, variable=self.milestone_var, text="Zero-duration milestone"))
+
+        self._was_pinned = bool(
+            (task.constraint_type in {"must_start_on", "start_no_earlier_than"} and task.constraint_date is not None)
+            or task.schedule_mode == "manual"
+        )
+        initial_start = (
+            task.constraint_date.isoformat()
+            if (self._was_pinned and task.constraint_date is not None)
+            else (task.start_date.isoformat() if task.start_date is not None else "")
+        )
+        self._initial_start_text = initial_start
+        self._force_auto_start = False
+        label("Start date")
+        start_frame = ttk.Frame(self.body)
+        self.start_date_var = tk.StringVar(value=initial_start)
+        ttk.Entry(start_frame, textvariable=self.start_date_var, width=16).pack(side="left")
+        ttk.Button(start_frame, text="Auto", command=self._reset_start_auto).pack(side="left", padx=(6, 0))
+        ttk.Label(start_frame, text="YYYY-MM-DD (or Auto)", style="Muted.TLabel").pack(side="left", padx=(8, 0))
+        place(start_frame)
 
         label("Duration (working days)")
         self.duration_var = tk.StringVar(value=_fmt(task.duration if task.duration is not None else 1))
@@ -182,6 +395,29 @@ class TaskDialog(_BaseDialog):
         place(ttk.Combobox(self.body, textvariable=self.person_var, state="readonly", width=42,
                            values=[UNASSIGNED, *self._resource_ids.keys()]))
 
+        label("Materials")
+        mat_box = ttk.Frame(self.body)
+        mat_top = ttk.Frame(mat_box)
+        mat_top.pack(fill="x")
+        mat_names = list(self._material_ids.keys())
+        self.mat_choice_var = tk.StringVar(value=mat_names[0] if mat_names else "(no materials added yet)")
+        ttk.Combobox(
+            mat_top,
+            textvariable=self.mat_choice_var,
+            state="readonly",
+            width=24,
+            values=mat_names if mat_names else ["(no materials added yet)"],
+        ).pack(side="left")
+        ttk.Label(mat_top, text="Qty").pack(side="left", padx=(6, 4))
+        self.mat_qty_var = tk.StringVar(value="1")
+        ttk.Entry(mat_top, textvariable=self.mat_qty_var, width=6).pack(side="left")
+        ttk.Button(mat_top, text="Add", command=self._add_selected_material).pack(side="left", padx=(6, 0))
+        ttk.Button(mat_top, text="Remove", command=self._remove_selected_material).pack(side="left", padx=(4, 0))
+        self.mat_list = tk.Listbox(mat_box, height=3, width=44, exportselection=False, relief="solid", borderwidth=1)
+        self.mat_list.pack(fill="x", pady=(4, 0))
+        place(mat_box)
+        self._refresh_material_list()
+
         fp_defaults = session.task_fp_defaults(task_id)
         label("Estimate by")
         method_frame = ttk.Frame(self.body)
@@ -216,9 +452,66 @@ class TaskDialog(_BaseDialog):
         delete.pack(side="left")
         self._update_preview()
 
+    def _refresh_material_list(self) -> None:
+        self.mat_list.delete(0, "end")
+        currency = self.session.project.currency
+        for mat_id, qty in self._material_items:
+            try:
+                res = self.session.find_resource(mat_id)
+            except SessionError:
+                continue
+            unit_lbl = str(res.custom_fields.get("material_label") or "").strip()
+            line_cost = qty * (res.standard_rate or 0.0) + (res.cost_per_use or 0.0)
+            qty_txt = f"{qty:g} {unit_lbl}" if unit_lbl else f"×{qty:g}"
+            self.mat_list.insert("end", f"{res.name} ({qty_txt}) — {format_money(line_cost, currency)}")
+
+    def _add_selected_material(self) -> None:
+        mat_id = self._material_ids.get(self.mat_choice_var.get())
+        if mat_id is None:
+            return
+        try:
+            qty = _parse_number(self.mat_qty_var.get(), "Material quantity", allow_zero=False)
+        except ValueError as exc:
+            self.fail(str(exc))
+            return
+        self.error_var.set("")
+        updated = False
+        for idx, (existing_id, _old_qty) in enumerate(self._material_items):
+            if existing_id == mat_id:
+                self._material_items[idx] = (mat_id, qty)
+                updated = True
+                break
+        if not updated:
+            self._material_items.append((mat_id, qty))
+        self._refresh_material_list()
+        self._update_preview()
+
+    def _remove_selected_material(self) -> None:
+        sel = self.mat_list.curselection()
+        if not sel:
+            if self._material_items:
+                self._material_items.pop()
+        else:
+            del self._material_items[sel[0]]
+        self._refresh_material_list()
+        self._update_preview()
+
+    def _material_total_cost(self) -> float:
+        total = 0.0
+        for mat_id, qty in self._material_items:
+            try:
+                res = self.session.find_resource(mat_id)
+                total += qty * (res.standard_rate or 0.0) + (res.cost_per_use or 0.0)
+            except SessionError:
+                pass
+        return total
+
     def _update_preview(self) -> None:
+        mat_cost = self._material_total_cost()
+        currency = self.session.project.currency
+        mat_note = f" + {format_money(mat_cost, currency)} materials" if mat_cost > 0 else ""
         if self.method_var.get() != FUNCTION_POINTS:
-            self.preview_var.set("Manual duration: scheduled from the duration above.")
+            self.preview_var.set(f"Manual duration: scheduled from the duration above{mat_note}.")
             return
         resource = self.session.find_resource(self._resource_ids[self.person_var.get()]) \
             if self.person_var.get() in self._resource_ids else None
@@ -232,7 +525,13 @@ class TaskDialog(_BaseDialog):
             return
         hours = points * hours_per_point(resource, self.complexity_var.get())
         rate = resource.standard_rate or 0.0
-        self.preview_var.set(f"{hours:,.1f} hours, {format_money(hours * rate, self.session.project.currency)}")
+        self.preview_var.set(
+            f"{hours:,.1f} hours, {format_money(hours * rate + mat_cost, currency)}"
+        )
+
+    def _reset_start_auto(self) -> None:
+        self._force_auto_start = True
+        self.start_date_var.set("")
 
     def _collect(self) -> TaskEdit:
         milestone = self.milestone_var.get()
@@ -243,6 +542,13 @@ class TaskDialog(_BaseDialog):
         fp_points = None
         if self.method_var.get() == FUNCTION_POINTS:
             fp_points = _parse_number(self.points_var.get(), "Function points", allow_zero=True)
+        raw_start = self.start_date_var.get().strip()
+        if not raw_start:
+            start_edit = None if (self._force_auto_start or self._was_pinned or self._initial_start_text) else _UNSET_DATE
+        elif raw_start == self._initial_start_text and not self._was_pinned and not self._force_auto_start:
+            start_edit = _UNSET_DATE
+        else:
+            start_edit = parse_date_input(raw_start)
         return TaskEdit(
             name=self.name_var.get(),
             description=self.notes.get("1.0", "end").strip(),
@@ -256,6 +562,8 @@ class TaskDialog(_BaseDialog):
             resource_id=self._resource_ids.get(person_name) if person_name != UNASSIGNED else None,
             fp_complexity=self.complexity_var.get() if fp_points is not None else None,
             fp_points=fp_points,
+            start_date=start_edit,
+            material_assignments=list(self._material_items),
         )
 
     def on_ok(self) -> None:

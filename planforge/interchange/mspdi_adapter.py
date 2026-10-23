@@ -119,6 +119,91 @@ def _find_all_children(element: ET.Element, name: str) -> list[ET.Element]:
     return [child for child in element if _strip_ns(child.tag) == name]
 
 
+def _parse_mspdi_clock_time(raw: str | None, *, is_end: bool = False) -> tuple[time, bool] | None:
+    """Parse an MSPDI ``FromTime``/``ToTime`` value into a naive local clock time.
+
+    Returns ``(parsed_time, ended_at_24h)``. In ProjectLibre and Microsoft Project
+    XML, ``ToTime`` of ``00:00:00`` (or ``24:00:00``) denotes end-of-day midnight
+    (24:00) rather than 00:00 at the start of the same day.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[1]
+    for tz_sep in ("Z", "+", "-"):
+        if tz_sep in text:
+            text = text.split(tz_sep, 1)[0]
+    if text.startswith("24:00"):
+        return (time(23, 59, 59), True) if is_end else (time(0, 0, 0), False)
+    try:
+        parsed = time.fromisoformat(text).replace(tzinfo=None)
+    except ValueError:
+        return None
+    if is_end and parsed == time(0, 0, 0):
+        return (time(23, 59, 59), True)
+    return (parsed, False)
+
+
+def _parse_mspdi_working_times(wtimes_el: ET.Element | None) -> list[WorkingPeriod]:
+    """Normalize ProjectLibre/MS Project ``WorkingTimes`` into ordered valid intervals."""
+    if wtimes_el is None:
+        return []
+    intervals: list[tuple[time, time]] = []
+    for wt_el in _find_all_children(wtimes_el, "WorkingTime"):
+        start_parsed = _parse_mspdi_clock_time(_text_of(wt_el, "FromTime"), is_end=False)
+        end_parsed = _parse_mspdi_clock_time(_text_of(wt_el, "ToTime"), is_end=True)
+        if start_parsed is None or end_parsed is None:
+            continue
+        p_start, _ = start_parsed
+        p_finish, ended_midnight = end_parsed
+        if p_start == p_finish and not ended_midnight:
+            # Skip zero-length placeholder slots without failing import.
+            continue
+        if p_finish < p_start:
+            # Overnight shift spanning midnight (e.g. 22:00 -> 06:00).
+            if p_finish > time(0, 0, 0):
+                intervals.append((time(0, 0, 0), p_finish))
+            if p_start < time(23, 59, 59):
+                intervals.append((p_start, time(23, 59, 59)))
+        elif p_start < p_finish:
+            intervals.append((p_start, p_finish))
+
+    if not intervals:
+        return []
+    intervals.sort(key=lambda pair: (pair[0], pair[1]))
+    merged: list[tuple[time, time]] = [intervals[0]]
+    for cur_start, cur_end in intervals[1:]:
+        prev_start, prev_end = merged[-1]
+        if cur_start <= prev_end:
+            merged[-1] = (prev_start, max(prev_end, cur_end))
+        else:
+            merged.append((cur_start, cur_end))
+    return [WorkingPeriod(start, finish) for start, finish in merged]
+
+
+def _parse_numeric_rate(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        val = float(text)
+        return max(0.0, val) if math.isfinite(val) else None
+    except ValueError:
+        cleaned = re.sub(r"[^0-9.\-+eE]", "", text.split("/")[0].replace(",", ""))
+        if not cleaned:
+            return None
+        try:
+            val = float(cleaned)
+            return max(0.0, val) if math.isfinite(val) else None
+        except ValueError:
+            return None
+
+
 def _text_of(element: ET.Element, name: str) -> str | None:
     child = _find_child(element, name)
     if child is not None and child.text is not None:
@@ -299,19 +384,7 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
                     is_working = day_working_str == "1"
                     if is_working:
                         working_days.append(iso_wd)
-                        periods: list[WorkingPeriod] = []
-                        wtimes_el = _find_child(wd_el, "WorkingTimes")
-                        if wtimes_el is not None:
-                            for wt_el in _find_all_children(wtimes_el, "WorkingTime"):
-                                from_t = _text_of(wt_el, "FromTime")
-                                to_t = _text_of(wt_el, "ToTime")
-                                if from_t and to_t:
-                                    try:
-                                        p_start = time.fromisoformat(from_t)
-                                        p_finish = time.fromisoformat(to_t)
-                                        periods.append(WorkingPeriod(p_start, p_finish))
-                                    except ValueError:
-                                        pass
+                        periods = _parse_mspdi_working_times(_find_child(wd_el, "WorkingTimes"))
                         if not periods:
                             periods = [WorkingPeriod(time(8, 0), time(12, 0)), WorkingPeriod(time(13, 0), time(17, 0))]
                         working_periods[iso_wd] = periods
@@ -339,6 +412,7 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
     # 2. Resources
     resources: list[Resource] = []
     res_uid_to_id: dict[str, str] = {}
+    res_outline_stack: dict[int, str] = {}
     res_elem = _find_child(root, "Resources")
     if res_elem is not None:
         for r_el in _find_all_children(res_elem, "Resource"):
@@ -353,37 +427,40 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
 
             max_units_str = _text_of(r_el, "MaxUnits")
             try:
-                max_units = float(max_units_str) if max_units_str is not None else 1.0
+                max_units = max(0.0, float(max_units_str)) if max_units_str is not None else 1.0
             except ValueError:
                 max_units = 1.0
 
-            rate_str = _text_of(r_el, "StandardRate")
-            std_rate: float | None = None
-            if rate_str:
-                try:
-                    std_rate = float(rate_str)
-                except ValueError:
-                    pass
-
-            ot_rate_str = _text_of(r_el, "OvertimeRate")
-            ot_rate: float | None = None
-            if ot_rate_str:
-                try:
-                    ot_rate = float(ot_rate_str)
-                except ValueError:
-                    pass
-
-            cost_per_use_str = _text_of(r_el, "CostPerUse")
-            cost_per_use: float | None = None
-            if cost_per_use_str:
-                try:
-                    cost_per_use = float(cost_per_use_str)
-                except ValueError:
-                    pass
+            std_rate = _parse_numeric_rate(_text_of(r_el, "StandardRate"))
+            ot_rate = _parse_numeric_rate(_text_of(r_el, "OvertimeRate"))
+            cost_per_use = _parse_numeric_rate(_text_of(r_el, "CostPerUse"))
 
             notes = _text_of(r_el, "Notes") or ""
             cal_uid_ref = _text_of(r_el, "CalendarUID")
             res_cal_id = cal_uid_to_id.get(cal_uid_ref) if cal_uid_ref else None
+
+            res_custom: dict[str, Any] = {}
+            group_text = (_text_of(r_el, "Group") or "").strip()
+            if group_text:
+                res_custom["group"] = group_text
+            initials_text = (_text_of(r_el, "Initials") or "").strip()
+            if initials_text:
+                res_custom["initials"] = initials_text
+            mat_label = (_text_of(r_el, "MaterialLabel") or "").strip()
+            if mat_label:
+                res_custom["material_label"] = mat_label
+
+            res_level_str = _text_of(r_el, "OutlineLevel")
+            res_level = 1
+            if res_level_str:
+                try:
+                    res_level = max(1, int(res_level_str))
+                except ValueError:
+                    res_level = 1
+            if res_level > 1 and (res_level - 1) in res_outline_stack:
+                res_custom["parent_id"] = res_outline_stack[res_level - 1]
+
+            rate_unit = mat_label if (r_type == "material" and mat_label) else ("unit" if r_type == "material" else "hour")
 
             res_obj = Resource(
                 id=new_id(),
@@ -392,12 +469,18 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
                 resource_type=r_type,
                 max_units=max_units,
                 standard_rate=std_rate,
+                standard_rate_unit=rate_unit,
                 overtime_rate=ot_rate,
                 cost_per_use=cost_per_use,
                 calendar_id=res_cal_id,
                 notes=notes,
+                custom_fields=res_custom,
             )
             resources.append(res_obj)
+            res_outline_stack[res_level] = res_obj.id
+            for deeper in list(res_outline_stack.keys()):
+                if deeper > res_level:
+                    del res_outline_stack[deeper]
             if r_uid:
                 res_uid_to_id[r_uid] = res_obj.id
 
@@ -441,6 +524,8 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
             t_notes = _text_of(t_el, "Notes") or ""
             t_start = _parse_iso_date(_text_of(t_el, "Start"))
             t_finish = _parse_iso_date(_text_of(t_el, "Finish"))
+            if t_start and t_finish and t_finish < t_start:
+                t_finish = t_start
 
             t_duration_raw = _text_of(t_el, "Duration")
             duration_val, duration_unit = _parse_mspdi_duration(t_duration_raw, hours_per_day)
@@ -595,6 +680,7 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
         )
 
     # 4. Assignments
+    res_obj_by_id = {r.id: r for r in resources}
     assignments: list[Assignment] = []
     assign_elem = _find_child(root, "Assignments")
     if assign_elem is not None:
@@ -606,10 +692,11 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
 
             task_id = task_uid_to_id[t_uid]
             res_id = res_uid_to_id[r_uid]
+            res_ref = res_obj_by_id.get(res_id)
 
             units_str = _text_of(a_el, "Units")
             try:
-                units = float(units_str) if units_str is not None else 1.0
+                units = max(0.0, float(units_str)) if units_str is not None else 1.0
             except ValueError:
                 units = 1.0
 
@@ -622,24 +709,17 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
             rem_work_str = _text_of(a_el, "RemainingWork")
             rem_work_val, _ = _parse_mspdi_duration(rem_work_str, hours_per_day)
 
-            cost_str = _text_of(a_el, "Cost")
-            cost_val: float | None = None
-            if cost_str:
-                try:
-                    cost_val = float(cost_str)
-                except ValueError:
-                    pass
+            cost_val = _parse_numeric_rate(_text_of(a_el, "Cost"))
+            if cost_val is None and res_ref is not None and res_ref.resource_type == "material":
+                if res_ref.standard_rate is not None or res_ref.cost_per_use is not None:
+                    cost_val = units * (res_ref.standard_rate or 0.0) + (res_ref.cost_per_use or 0.0)
 
-            act_cost_str = _text_of(a_el, "ActualCost")
-            act_cost_val: float | None = None
-            if act_cost_str:
-                try:
-                    act_cost_val = float(act_cost_str)
-                except ValueError:
-                    pass
+            act_cost_val = _parse_numeric_rate(_text_of(a_el, "ActualCost"))
 
             a_start = _parse_iso_date(_text_of(a_el, "Start"))
             a_finish = _parse_iso_date(_text_of(a_el, "Finish"))
+            if a_start and a_finish and a_finish < a_start:
+                a_finish = a_start
 
             assignments.append(
                 Assignment(
@@ -658,6 +738,10 @@ def import_bytes(data: bytes, *, source_name: str | None = None) -> ImportResult
                     external_ids={"mspdi:TaskUID": t_uid, "mspdi:ResourceUID": r_uid},
                 )
             )
+
+    if start_date and finish_date and finish_date < start_date:
+        task_finishes = [t.finish_date for t in tasks if t.finish_date]
+        finish_date = max([start_date, *task_finishes])
 
     project = Project(
         id=new_id(),
@@ -900,6 +984,21 @@ def export_project(project: Project) -> ExportResult:
     # 3. Resources
     res_elem = add_sub(root, "Resources", None)
     res_id_to_uid: dict[str, str] = {}
+    res_parent_map: dict[str, str | None] = {
+        r.id: (str(r.custom_fields["parent_id"]) if isinstance(r.custom_fields.get("parent_id"), str) else None)
+        for r in project.resources
+    }
+
+    def get_res_level(res_id: str) -> int:
+        lvl = 1
+        curr = res_parent_map.get(res_id)
+        seen: set[str] = set()
+        while curr and curr not in seen and curr in res_parent_map:
+            seen.add(curr)
+            lvl += 1
+            curr = res_parent_map.get(curr)
+        return lvl
+
     res_counter = 1
     for r in project.resources:
         r_uid = str(res_counter)
@@ -910,14 +1009,26 @@ def export_project(project: Project) -> ExportResult:
         add_sub(r_el, "UID", r_uid)
         add_sub(r_el, "ID", r_uid)
         add_sub(r_el, "Name", r.name)
+        initials_val = r.custom_fields.get("initials")
+        if isinstance(initials_val, str) and initials_val.strip():
+            add_sub(r_el, "Initials", initials_val.strip())
+        group_val = r.custom_fields.get("group")
+        if isinstance(group_val, str) and group_val.strip():
+            add_sub(r_el, "Group", group_val.strip())
+        res_lvl = get_res_level(r.id)
+        if res_lvl > 1:
+            add_sub(r_el, "OutlineLevel", str(res_lvl))
         # Type: 1=work, 0=material, 2=cost
         type_num = "0" if r.resource_type == "material" else ("2" if r.resource_type == "cost" else "1")
         add_sub(r_el, "Type", type_num)
+        mat_label_val = r.custom_fields.get("material_label")
+        if isinstance(mat_label_val, str) and mat_label_val.strip():
+            add_sub(r_el, "MaterialLabel", mat_label_val.strip())
         add_sub(r_el, "IsNull", "0")
         add_sub(r_el, "MaxUnits", str(r.max_units))
         if r.standard_rate is not None:
             add_sub(r_el, "StandardRate", f"{r.standard_rate:.2f}")
-            add_sub(r_el, "StandardRateFormat", "2")  # per hour
+            add_sub(r_el, "StandardRateFormat", "8" if r.resource_type == "material" else "2")
         if r.overtime_rate is not None:
             add_sub(r_el, "OvertimeRate", f"{r.overtime_rate:.2f}")
         if r.cost_per_use is not None:

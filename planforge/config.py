@@ -106,6 +106,40 @@ def format_date(value: date | None, config_file: Path | None = None) -> str:
     return value.strftime(DATE_FORMATS.get(selected, DATE_FORMATS["ISO"]))
 
 
+def parse_date_input(value: str, config_file: Path | None = None) -> date | None:
+    """Parse user-entered dates in ISO, UK, US, or written month formats."""
+    from datetime import datetime as _dt
+
+    text = (value or "").strip()
+    if not text:
+        return None
+
+    iso_match = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", text)
+    if iso_match:
+        year, month, day = (int(part) for part in iso_match.groups())
+        return date(year, month, day)
+
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+
+    selected = get_preference("workspace", "date_format", "ISO", config_file)
+    dmy_formats = ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y")
+    mdy_formats = ("%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y")
+    ordered_formats = (
+        (*mdy_formats, *dmy_formats) if selected == "US" else (*dmy_formats, *mdy_formats)
+    ) + ("%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y", "%b %d, %Y", "%B %d, %Y")
+
+    for fmt in ordered_formats:
+        try:
+            return _dt.strptime(text, fmt).date()
+        except ValueError:
+            continue
+
+    raise ValueError(f"Invalid date {text!r}. Use YYYY-MM-DD (for example, 2026-10-19).")
+
+
 def _save_parser(parser: configparser.ConfigParser, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not parser.has_section("app"):
@@ -290,6 +324,7 @@ __all__ = [
     "SHORTCUT_DEFAULTS",
     "SETTINGS_VERSION",
     "format_date",
+    "parse_date_input",
     "THEMES",
     "get_config_dir",
     "get_preference",

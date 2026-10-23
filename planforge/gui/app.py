@@ -61,7 +61,7 @@ VIEWS: list[tuple[str, str, type]] = [
     ("overview", "Overview", OverviewView),
     ("tasks", "Tasks", TasksView),
     ("timeline", "Timeline", TimelineView),
-    ("people", "People", PeopleView),
+    ("people", "People & Materials", PeopleView),
     ("costs", "Costs & Workload", CostsView),
     ("estimates", "Function Points", EstimatorView),
     ("convert", "Convert", ConvertView),
@@ -169,6 +169,10 @@ class PlanForgeApp(tk.Tk):
         self.edit_menu.add_command(label="Undo", accelerator=self._shortcut_accelerator("undo"), command=self.undo)
         redo_accelerator = self._shortcut_accelerator("redo", shift=sys.platform == "darwin")
         self.edit_menu.add_command(label="Redo", accelerator=redo_accelerator, command=self.redo)
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(label="Add Task", command=lambda: self._run_view_action("tasks", "_add"))
+        self.edit_menu.add_command(label="Add Person…", command=lambda: self._run_view_action("people", "_add"))
+        self.edit_menu.add_command(label="Add Material…", command=lambda: self._run_view_action("people", "_add_material"))
         menubar.add_cascade(label="Edit", menu=self.edit_menu)
         self._update_history_menu()
 
@@ -296,19 +300,26 @@ class PlanForgeApp(tk.Tk):
     # Running actions
     # ------------------------------------------------------------------
 
-    def perform(self, action: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
+    def perform(self, action: Callable[..., Any], *args: Any, show_errors: bool = True, **kwargs: Any) -> bool:
         """Run a session change. On success refresh every view; on error show a message."""
         previous_project_id = self.session.project.id
         try:
             action(*args, **kwargs)
         except SessionError as exc:
-            messagebox.showerror("PlanForge", str(exc), parent=self)
+            if show_errors:
+                messagebox.showerror("PlanForge", str(exc), parent=self)
             return False
         if self.session.project.id != previous_project_id:
             clear_recovery_snapshot(previous_project_id)
         elif getattr(action, "__name__", "") in {"undo", "redo"} and not self.session.dirty:
             clear_recovery_snapshot(self.session.project.id)
         self.refresh_all()
+        return True
+
+    def _commit_pending_settings(self, *, show_errors: bool = False) -> bool:
+        settings_view = self.views.get("settings")
+        if settings_view is not None and hasattr(settings_view, "commit_pending"):
+            return bool(settings_view.commit_pending(show_errors=show_errors))
         return True
 
     def refresh_all(self) -> None:
@@ -442,6 +453,9 @@ class PlanForgeApp(tk.Tk):
 
     def _on_tab_changed(self, _event: Any = None) -> None:
         current = self.notebook.select()
+        settings_view = self.views.get("settings")
+        if settings_view is not None and str(settings_view) != current:
+            self._commit_pending_settings(show_errors=False)
         for key, _label, _cls in VIEWS:
             if str(self.views[key]) == current:
                 try:
@@ -539,11 +553,15 @@ class PlanForgeApp(tk.Tk):
             remember_recent_project(path)
 
     def save_project(self) -> bool:
+        if not self._commit_pending_settings(show_errors=True):
+            return False
         if self.session.file_path is None:
             return self.save_project_as()
         return self._save_to(self.session.file_path)
 
     def save_project_as(self) -> bool:
+        if not self._commit_pending_settings(show_errors=True):
+            return False
         default = self.session.project.name.replace(" ", "_").replace("/", "_") + PFP_EXTENSION
         path = filedialog.asksaveasfilename(parent=self, title="Save PlanForge project", defaultextension=PFP_EXTENSION,
                                             initialfile=default,
@@ -574,6 +592,8 @@ class PlanForgeApp(tk.Tk):
             self.refresh_all()
 
     def export_project(self) -> None:
+        if not self._commit_pending_settings(show_errors=True):
+            return
         dialog = ExportDialog(self, self.session)
         dialog.show()
 

@@ -667,10 +667,21 @@ def _build_strict_tk_modules() -> dict[str, types.ModuleType]:
         def tag_configure(self, _tag: str, **_kwargs: object) -> None:
             pass
 
-        def insert(self, _parent: str, _index: str | int, iid: str | None = None, **kwargs: object) -> str:
+        def insert(self, parent_iid: str, _index: str | int, iid: str | None = None, **kwargs: object) -> str:
             row_id = iid or f"item-{len(self._rows) + 1}"
-            self._rows[row_id] = dict(kwargs)
+            entry = dict(kwargs)
+            entry["_parent"] = parent_iid
+            self._rows[row_id] = entry
             return row_id
+
+        def parent(self, item: str) -> str:
+            return str(self._rows.get(item, {}).get("_parent", ""))
+
+        def item(self, item: str, option: str | None = None) -> object:
+            row = self._rows.get(item, {})
+            if option is None:
+                return row
+            return row.get(option, "")
 
         def delete(self, *items: str) -> None:
             for item in items:
@@ -946,6 +957,99 @@ class HeadlessStrictTkGuiTests(unittest.TestCase):
         self.assertTrue(converted_gan.is_file())
 
         self.app.show_command_palette()
+
+    def test_start_date_changes_persist_across_settings_tab_switches_task_dialog_and_save(self) -> None:
+        from datetime import date
+        from planforge.gui.dialogs import TaskDialog
+
+        settings = self.app.views["settings"]
+        self.app.select_tab_by_key("settings")
+        self.app._on_tab_changed()
+
+        # 1. Explicit Apply in Settings to a date earlier than today (2026-10-23)
+        settings.start_var.set("2026-09-01")
+        self.assertTrue(settings._apply())
+        self.assertEqual(self.app.session.project.start_date, date(2026, 9, 1))
+        self.assertEqual(settings.start_var.get(), "2026-09-01")
+        self.assertEqual(self.app.session.project.tasks[0].start_date, date(2026, 9, 1))
+
+        # 2. Type UK-formatted start date and switch tabs WITHOUT clicking Apply Changes
+        settings.start_var.set("14/09/2026")
+        self.app.select_tab_by_key("tasks")
+        self.app._on_tab_changed()
+        self.assertEqual(self.app.session.project.start_date, date(2026, 9, 14))
+        self.app.select_tab_by_key("settings")
+        self.app._on_tab_changed()
+        self.assertEqual(settings.start_var.get(), "2026-09-14")
+
+        # 3. Type start date in Settings and save directly via save_project()
+        pfp_file = self.tmp / "saved_after_settings_edit.pfp"
+        self.app._save_to(pfp_file)
+        settings.start_var.set("2026-10-05")
+        self.assertTrue(self.app.save_project())
+        self.assertEqual(self.app.session.project.start_date, date(2026, 10, 5))
+
+        # 4. Edit start date directly inside TaskDialog (Edit Task)
+        first_task = self.app.session.project.tasks[0]
+        dlg = TaskDialog(self.app, self.app.session, first_task.id)
+        dlg.start_date_var.set("2026-08-17")
+        dlg.on_ok()
+        self.assertTrue(dlg.result, dlg.error_var.get())
+        self.assertEqual(first_task.start_date, date(2026, 8, 17))
+        self.assertEqual(self.app.session.project.start_date, date(2026, 8, 17))
+
+
+    def test_people_and_materials_sheet_hierarchy_and_task_material_dialog(self) -> None:
+        from planforge.gui.dialogs import ResourceDialog, TaskDialog
+
+        # Add a top-level Materials group and nested Dell PowerEdge server via ResourceDialog
+        hdr_dlg = ResourceDialog(self.app, self.app.session, default_type="material")
+        hdr_dlg.name_var.set("Materials")
+        hdr_dlg.rate_var.set("0")
+        hdr_dlg.on_ok()
+        self.assertTrue(hdr_dlg.result, hdr_dlg.error_var.get())
+
+        srv_dlg = ResourceDialog(self.app, self.app.session, default_type="material")
+        srv_dlg.name_var.set("Dell PowerEdge server")
+        srv_dlg.material_label_var.set("unit")
+        srv_dlg.rate_var.set("5000")
+        srv_dlg.parent_var.set("Materials")
+        srv_dlg.on_ok()
+        self.assertTrue(srv_dlg.result, srv_dlg.error_var.get())
+
+        cable_dlg = ResourceDialog(self.app, self.app.session, default_type="material")
+        cable_dlg.name_var.set("cat6 network cabling")
+        cable_dlg.material_label_var.set("metre")
+        cable_dlg.rate_var.set("6.49")
+        cable_dlg.parent_var.set("Materials")
+        cable_dlg.on_ok()
+        self.assertTrue(cable_dlg.result, cable_dlg.error_var.get())
+
+        # Assign both materials with quantities inside TaskDialog on the first task
+        first_task = self.app.session.project.tasks[0]
+        tdlg = TaskDialog(self.app, self.app.session, first_task.id)
+        tdlg.mat_choice_var.set("Dell PowerEdge server")
+        tdlg.mat_qty_var.set("1")
+        tdlg._add_selected_material()
+        tdlg.mat_choice_var.set("cat6 network cabling")
+        tdlg.mat_qty_var.set("50")
+        tdlg._add_selected_material()
+        tdlg.on_ok()
+        self.assertTrue(tdlg.result, tdlg.error_var.get())
+        self.app.refresh_all()
+
+        # Verify People & Materials tree structure, blank Max. Units on materials, and Costs/Tasks tabs
+        people_view = self.app.views["people"]
+        mat_hdr = next(r for r in self.app.session.project.resources if r.name == "Materials")
+        srv = next(r for r in self.app.session.project.resources if r.name == "Dell PowerEdge server")
+        self.assertEqual(people_view.tree.parent(srv.id), mat_hdr.id)
+        srv_vals = people_view.tree.item(srv.id, "values")
+        self.assertEqual(srv_vals[1], "Material")
+        self.assertEqual(srv_vals[2], "unit")
+        self.assertEqual(srv_vals[4], "")  # Max. Units blank on Material rows just like ProjectLibre!
+
+        costs_view = self.app.views["costs"]
+        self.assertIn("5,324.50", costs_view.cards["Material cost"].get())
 
 
 if __name__ == "__main__":
