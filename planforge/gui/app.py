@@ -45,6 +45,7 @@ from planforge.gui.views import (
     SettingsView,
     TasksView,
 )
+from planforge.icons import apply_window_icon, configure_platform_app_identity
 from planforge.session import PFP_EXTENSION, ProjectSession, SessionError
 from planforge.recovery import clear_recovery_snapshot, list_recovery_snapshots, save_recovery_snapshot
 from planforge.theme_library import list_installed_themes
@@ -73,10 +74,12 @@ VIEWS: list[tuple[str, str, type]] = [
 
 class PlanForgeApp(tk.Tk):
     def __init__(self, open_path: str | Path | None = None) -> None:
-        super().__init__()
+        configure_platform_app_identity()
+        super().__init__(className="PlanForge")
         self.title("PlanForge")
         self.geometry("1320x860")
         self.minsize(1020, 680)
+        apply_window_icon(self)
 
         self.theme_name = get_theme_setting()
         initial_palette = self._theme_palette(self.theme_name)

@@ -1099,13 +1099,22 @@ def remove_venv(paths: VenvPaths, *, log: logging.Logger = LOGGER) -> None:
     if not paths.root.exists():
         return
     log.info("Removing virtual environment at %s (%s)", paths.root, reason)
-    try:
-        shutil.rmtree(str(paths.root))
-    except OSError as exc:
+    last_exc: OSError | None = None
+    for delay in (0.0, 0.05, 0.1, 0.2, 0.4):
+        if delay:
+            time.sleep(delay)
+        try:
+            if paths.root.exists():
+                shutil.rmtree(str(paths.root))
+            last_exc = None
+            break
+        except OSError as exc:
+            last_exc = exc
+    if last_exc is not None:
         raise LauncherError(
             ExitCode.VENV_ERROR,
             "The existing virtual environment could not be removed.",
-            details=str(exc),
+            details=str(last_exc),
             hints=[
                 "Close any other PlanForge windows or terminals using the environment.",
                 f"Delete {paths.root} manually, then try again.",

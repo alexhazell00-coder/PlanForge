@@ -73,10 +73,10 @@ class FakeRunner:
 
 
 def same_path(left, right) -> bool:
-    """Compare paths the way the current OS does (case, separators)."""
-    return os.path.normcase(os.path.normpath(os.path.abspath(str(left)))) == os.path.normcase(
-        os.path.normpath(os.path.abspath(str(right)))
-    )
+    """Compare paths the way the current OS does (case, separators, Windows 8.3 short names)."""
+    l_resolved = os.path.normcase(os.path.normpath(str(Path(left).resolve())))
+    r_resolved = os.path.normcase(os.path.normpath(str(Path(right).resolve())))
+    return l_resolved == r_resolved
 
 
 def linux_platform(**release):
@@ -195,7 +195,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertTrue(launcher.needs_gui(["--export-file", "out.gan"]))
 
     def test_relative_paths_are_resolved_against_caller(self) -> None:
-        base = Path("/home/user/projects")
+        base = Path(tempfile.gettempdir()).resolve() / "projects"
         args = launcher.normalize_app_args(
             [
                 "--import-file",
@@ -212,14 +212,15 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(args[4:], ["--export-format", "ganttproject"])
 
     def test_project_path_and_equals_forms(self) -> None:
+        base = Path(tempfile.gettempdir()).resolve() / "base"
         args = launcher.normalize_app_args(
-            ["--import-file=in.xml", "project.pfp"], "/tmp/base"
+            ["--import-file=in.xml", "project.pfp"], base
         )
-        self.assertEqual(args[0], "--import-file=/tmp/base/in.xml")
-        self.assertEqual(args[1], "/tmp/base/project.pfp")
-        absolute = str(Path("/tmp/absolute.pfp"))
+        self.assertEqual(args[0], f"--import-file={base / 'in.xml'}")
+        self.assertEqual(args[1], str(base / "project.pfp"))
+        absolute = str(Path(tempfile.gettempdir()).resolve() / "absolute.pfp")
         self.assertEqual(
-            launcher.normalize_app_args([absolute], "/tmp/base"), [absolute]
+            launcher.normalize_app_args([absolute], base), [absolute]
         )
 
 
@@ -347,14 +348,15 @@ class VenvStructureTests(unittest.TestCase):
         self.assertEqual(launcher.validate_venv(self.paths).status, "invalid")
 
     def test_real_venv_is_validated(self) -> None:
+        host_paths = launcher.venv_paths(self.root, launcher.detect_platform())
         created = subprocess.run(
-            [sys.executable, "-m", "venv", str(self.paths.root)],
+            [sys.executable, "-m", "venv", str(host_paths.root)],
             capture_output=True,
             text=True,
             timeout=120,
         )
         self.assertEqual(created.returncode, 0, created.stderr)
-        state = launcher.validate_venv(self.paths)
+        state = launcher.validate_venv(host_paths)
         self.assertEqual(state.status, "ready", state.reason)
         assert state.info is not None
         self.assertEqual(state.info.version, tuple(sys.version_info[:3]))
@@ -929,7 +931,13 @@ class FakeAppTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.temp.cleanup()
+        for _ in range(5):
+            try:
+                cls.temp.cleanup()
+                return
+            except OSError:
+                time.sleep(0.1)
+        shutil.rmtree(cls.base, ignore_errors=True)
 
     def invoke(self, *args, cwd=None, env=None):
         environment = os.environ.copy()
