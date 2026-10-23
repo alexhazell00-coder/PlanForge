@@ -17,15 +17,16 @@ from typing import Any, Callable
 from planforge.config import (
     THEMES,
     clear_recent_projects,
+    delete_workspace_layout,
+    format_date,
+    get_preference,
     get_recent_projects,
     get_shortcut_keys,
     get_theme_setting,
     get_workspace_layouts,
-    set_workspace_layout,
-    delete_workspace_layout,
-    format_date,
     remember_recent_project,
     set_theme_setting,
+    set_workspace_layout,
 )
 from planforge.gui.appearance import AppearanceManagerDialog
 from planforge.gui.convert_view import ConvertView
@@ -146,12 +147,13 @@ class PlanForgeApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _build_menu(self) -> None:
+        previous_menu = getattr(self, "_menubar", None)
         menubar = tk.Menu(self)
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="New Project", accelerator=self._shortcut_accelerator("new"), command=self.new_project)
         file_menu.add_command(label="Open…", accelerator=self._shortcut_accelerator("open"), command=self.open_project)
-        self.recent_menu = tk.Menu(file_menu, tearoff=False)
-        file_menu.add_cascade(label="Open Recent", menu=self.recent_menu, postcommand=self._populate_recent_menu)
+        self.recent_menu = tk.Menu(file_menu, tearoff=False, postcommand=self._populate_recent_menu)
+        file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
         file_menu.add_separator()
         file_menu.add_command(label="Save", accelerator=self._shortcut_accelerator("save"), command=self.save_project)
         file_menu.add_command(label="Save As…", accelerator=self._shortcut_accelerator("save", shift=True), command=self.save_project_as)
@@ -186,8 +188,8 @@ class PlanForgeApp(tk.Tk):
         view_menu.add_cascade(label="Theme", menu=theme_menu)
         view_menu.add_command(label="Manage Themes…", command=self.open_theme_manager)
         view_menu.add_command(label="Cycle Theme", accelerator=_shortcut("T"), command=self.toggle_theme)
-        self.layout_menu = tk.Menu(view_menu, tearoff=False)
-        view_menu.add_cascade(label="Workspace Layouts", menu=self.layout_menu, postcommand=self._populate_layout_menu)
+        self.layout_menu = tk.Menu(view_menu, tearoff=False, postcommand=self._populate_layout_menu)
+        view_menu.add_cascade(label="Workspace Layouts", menu=self.layout_menu)
         view_menu.add_separator()
         for idx, (key, label, _cls) in enumerate(VIEWS):
             acc = _shortcut(str(idx + 1)) if idx < 9 else (_shortcut("0") if idx == 9 else "")
@@ -209,6 +211,12 @@ class PlanForgeApp(tk.Tk):
         help_menu.add_command(label="About PlanForge", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
         self.configure(menu=menubar)
+        self._menubar = menubar
+        if previous_menu is not None:
+            try:
+                previous_menu.destroy()
+            except tk.TclError:
+                pass
 
     def _build_toolbar(self) -> None:
         bar = ttk.Frame(self, padding=(8, 8, 8, 4))
@@ -834,6 +842,16 @@ class PlanForgeApp(tk.Tk):
             if was_dirty and self.session.dirty:  # user explicitly chose Discard
                 clear_recovery_snapshot(project_id)
             self.destroy()
+
+    def destroy(self) -> None:
+        pending = getattr(self, "_recovery_after_id", None)
+        self._recovery_after_id = None
+        if pending:
+            try:
+                self.after_cancel(pending)
+            except tk.TclError:
+                pass
+        super().destroy()
 
 
 def run(open_path: str | Path | None = None) -> None:

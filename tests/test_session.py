@@ -8,14 +8,18 @@ same session object the Tkinter windows use. No display is required.
 from __future__ import annotations
 
 import io
+import os
+import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from planforge import config, estimation
 from planforge.__main__ import main as cli_main
+from planforge.recovery import list_recovery_snapshots, load_recovery_project, save_recovery_snapshot
 from planforge.session import ProjectSession, SessionError, TaskEdit
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -310,6 +314,191 @@ class FileWorkflowTests(unittest.TestCase):
         import_ids = [c[0] for c in s.format_choices("import")]
         self.assertIn("pfp", export_ids)
         self.assertNotIn("pfp", import_ids)
+
+    def test_preview_import_supports_pfp_database_files(self) -> None:
+        s = ProjectSession()
+        s.add_task("Stored in database")
+        pfp_path = s.save(self.dir / "from_pfp.pfp")
+        preview = s.preview_import(pfp_path)
+        self.assertTrue(preview.success, [i.message for i in preview.issues])
+        self.assertEqual(preview.source_format, "pfp")
+        assert preview.project is not None
+        self.assertEqual(len(preview.project.tasks), len(s.project.tasks))
+
+        broken = self.dir / "broken.pfp"
+        broken.write_bytes(b"not sqlite")
+        bad_preview = s.preview_import(broken)
+        self.assertFalse(bad_preview.success)
+        self.assertEqual(bad_preview.source_format, "pfp")
+
+
+@contextmanager
+def _enforce_windows_file_locks():
+    """Simulate Windows NT file locking where open SQLite handles block replace/unlink."""
+    open_handles: dict[Path, int] = {}
+    real_connect = sqlite3.connect
+    real_replace = os.replace
+    real_unlink = os.unlink
+
+    class _TrackedConnection:
+        def __init__(self, raw: sqlite3.Connection, target: Path) -> None:
+            self._raw = raw
+            self._target = target
+            self._closed = False
+            open_handles[target] = open_handles.get(target, 0) + 1
+
+        def close(self) -> None:
+            if not self._closed:
+                self._closed = True
+                remaining = open_handles.get(self._target, 1) - 1
+                if remaining <= 0:
+                    open_handles.pop(self._target, None)
+                else:
+                    open_handles[self._target] = remaining
+            self._raw.close()
+
+        def __enter__(self):
+            self._raw.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            # Matches stdlib sqlite3.Connection.__exit__: commits/rolls back, never closes!
+            return self._raw.__exit__(exc_type, exc, tb)
+
+        def __getattr__(self, item: str):
+            return getattr(self._raw, item)
+
+    def tracked_connect(database, *args, **kwargs):
+        resolved = Path(database).resolve()
+        raw = real_connect(database, *args, **kwargs)
+        return _TrackedConnection(raw, resolved)
+
+    def windows_replace(src, dst):
+        src_path = Path(src).resolve()
+        dst_path = Path(dst).resolve()
+        if src_path in open_handles or dst_path in open_handles:
+            err = PermissionError(
+                13,
+                "The process cannot access the file because it is being used by another process",
+                str(src),
+            )
+            err.winerror = 32  # type: ignore[attr-defined]
+            err.filename2 = str(dst)
+            raise err
+        return real_replace(src, dst)
+
+    def windows_unlink(path, *args, **kwargs):
+        resolved = Path(path).resolve()
+        if resolved in open_handles:
+            err = PermissionError(
+                13,
+                "The process cannot access the file because it is being used by another process",
+                str(path),
+            )
+            err.winerror = 32  # type: ignore[attr-defined]
+            raise err
+        return real_unlink(path, *args, **kwargs)
+
+    with (
+        patch("planforge.storage.sqlite_store.sqlite3.connect", side_effect=tracked_connect),
+        patch("planforge._atomic.os.replace", side_effect=windows_replace),
+        patch("planforge._atomic.os.unlink", side_effect=windows_unlink),
+        patch("planforge._atomic.time.sleep", return_value=None),
+    ):
+        yield open_handles
+
+
+class WindowsFileLockingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_save_reopen_overwrite_and_recovery_close_sqlite_handles_before_replace(self) -> None:
+        with _enforce_windows_file_locks() as open_handles:
+            session = ProjectSession()
+            imported = session.preview_import(FIXTURES / "sample_projectlibre.xml")
+            session.apply_import(imported)
+
+            target = self.dir / "neomybank_self-service_point_installation.pfp"
+            saved = session.save(target)
+            self.assertEqual(saved, target)
+            self.assertEqual(open_handles, {})
+            self.assertEqual(list(self.dir.glob(".*.tmp")), [])
+
+            reopened = ProjectSession()
+            reopened.open_pfp(target)
+            self.assertEqual(open_handles, {})
+
+            reopened.add_task("Follow-up installation check")
+            reopened.save()
+            self.assertEqual(open_handles, {})
+            self.assertEqual(list(self.dir.glob(".*.tmp")), [])
+
+            recovery_root = self.dir / "config"
+            snapshot = save_recovery_snapshot(reopened.project, target, root=recovery_root)
+            self.assertEqual(open_handles, {})
+            records, warnings = list_recovery_snapshots(root=recovery_root)
+            self.assertEqual(warnings, [])
+            self.assertEqual(len(records), 1)
+            restored = load_recovery_project(snapshot.snapshot_path)
+            self.assertEqual(restored.id, reopened.project.id)
+            self.assertEqual(open_handles, {})
+
+    def test_transient_onedrive_sharing_violation_retries_and_succeeds(self) -> None:
+        real_replace = os.replace
+        attempts = 0
+
+        def flaky_replace(src, dst):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 3:
+                err = PermissionError(
+                    13,
+                    "The process cannot access the file because it is being used by another process",
+                    str(src),
+                )
+                err.winerror = 32  # type: ignore[attr-defined]
+                err.filename2 = str(dst)
+                raise err
+            return real_replace(src, dst)
+
+        with (
+            patch("planforge._atomic.os.replace", side_effect=flaky_replace),
+            patch("planforge._atomic.time.sleep", return_value=None),
+        ):
+            session = ProjectSession()
+            target = self.dir / "onedrive_synced_project.pfp"
+            session.save(target)
+
+        self.assertEqual(attempts, 4)
+        self.assertTrue(target.is_file())
+        self.assertEqual(list(self.dir.glob(".*.tmp")), [])
+
+    def test_persistent_lock_error_cleans_up_temp_file_and_raises_session_error(self) -> None:
+        def always_locked(src, dst):
+            err = PermissionError(
+                13,
+                "The process cannot access the file because it is being used by another process",
+                str(src),
+            )
+            err.winerror = 32  # type: ignore[attr-defined]
+            err.filename2 = str(dst)
+            raise err
+
+        with (
+            patch("planforge._atomic.os.replace", side_effect=always_locked),
+            patch("planforge._atomic.time.sleep", return_value=None),
+        ):
+            session = ProjectSession()
+            target = self.dir / "locked_project.pfp"
+            with self.assertRaises(SessionError):
+                session.save(target)
+
+        self.assertFalse(target.exists())
+        self.assertEqual(list(self.dir.glob(".*.tmp")), [])
 
 
 class EstimatorTests(unittest.TestCase):

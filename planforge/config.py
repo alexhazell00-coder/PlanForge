@@ -19,6 +19,8 @@ from datetime import date
 from pathlib import Path
 from typing import Mapping
 
+from planforge._atomic import atomic_replace, best_effort_unlink
+
 APP_NAME = "PlanForge"
 THEMES = ("light", "dark", "midnight", "high_contrast", "classic")
 SETTINGS_VERSION = "1"
@@ -121,12 +123,9 @@ def _save_parser(parser: configparser.ConfigParser, path: Path) -> None:
             parser.write(handle)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        atomic_replace(temp_name, path)
     except BaseException:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
+        best_effort_unlink(temp_name)
         raise
 
 
