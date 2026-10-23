@@ -70,8 +70,10 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertTrue(bool(self.app.layout_menu.cget("postcommand")))
         self.app._populate_recent_menu()
         self.app._populate_layout_menu()
-        self.assertEqual(self.app.recent_menu.index("end"), 0)
-        self.assertGreaterEqual(self.app.layout_menu.index("end"), 2)
+        # Empty state populates: "No recent projects", separator, "Clear Recent Projects" (indices 0..2)
+        self.assertEqual(self.app.recent_menu.index("end"), 2)
+        # Empty layout menu populates: "Save Current Layout…" (index 0)
+        self.assertEqual(self.app.layout_menu.index("end"), 0)
 
     def test_save_and_recovery_autosave_work_from_window(self) -> None:
         target = self.tmp / "window_save.pfp"
@@ -97,8 +99,10 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertEqual(self.app.session.project.tasks, [])
 
     def test_ctrl_n_works_while_a_child_widget_has_focus(self) -> None:
+        self.app.deiconify()
         entry = tk.Entry(self.app)
         entry.pack()
+        self.app.update()
         entry.focus_force()
         self.app.update()
         entry.event_generate("<Control-n>")
@@ -106,6 +110,7 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertEqual(self.app.session.project.name, "Untitled project")
         self.assertEqual(self.app.session.project.tasks, [])
         entry.destroy()
+        self.app.withdraw()
 
     def test_theme_toggle_cycles_built_ins_without_changing_project(self) -> None:
         from planforge.config import THEMES
@@ -370,10 +375,28 @@ def _build_strict_tk_modules() -> dict[str, types.ModuleType]:
                 child.destroy()
             self._exists = False
 
+    class PhotoImage:
+        def __init__(self, *, file: str | None = None, data: object = None, **_kwargs: object) -> None:
+            if file is not None and not Path(file).is_file():
+                raise TclError(f"couldn't open \"{file}\": no such file or directory")
+            self.file = file
+            self.data = data
+
     class Tk(Misc):
-        def __init__(self) -> None:
+        def __init__(self, screenName: str | None = None, baseName: str | None = None, className: str = "Tk", **_kwargs: object) -> None:
             super().__init__(None, allowed=COMMON_WIDGET_OPTS | {"menu"})
             self._title = ""
+            self._class_name = className
+            self._icon_applied = False
+            _ = (screenName, baseName)
+
+        def iconphoto(self, _default: bool = False, *images: object) -> None:
+            if images:
+                self._icon_applied = True
+
+        def iconbitmap(self, _bitmap: object = None, default: object = None) -> None:
+            if _bitmap or default:
+                self._icon_applied = True
 
         def title(self, text: str | None = None) -> str:
             if text is not None:
@@ -756,6 +779,7 @@ def _build_strict_tk_modules() -> dict[str, types.ModuleType]:
     tk_mod.Event = types.SimpleNamespace  # type: ignore[attr-defined]
     tk_mod.Widget = Misc  # type: ignore[attr-defined]
     tk_mod.Tk = Tk  # type: ignore[attr-defined]
+    tk_mod.PhotoImage = PhotoImage  # type: ignore[attr-defined]
     tk_mod.Toplevel = Toplevel  # type: ignore[attr-defined]
     tk_mod.Frame = Misc  # type: ignore[attr-defined]
     tk_mod.Label = Misc  # type: ignore[attr-defined]
@@ -956,6 +980,8 @@ class HeadlessStrictTkGuiTests(unittest.TestCase):
         convert._convert()
         self.assertTrue(converted_gan.is_file())
 
+        self.assertTrue(self.app._icon_applied)
+        self.assertEqual(self.app._class_name, "PlanForge")
         self.app.show_command_palette()
 
     def test_start_date_changes_persist_across_settings_tab_switches_task_dialog_and_save(self) -> None:

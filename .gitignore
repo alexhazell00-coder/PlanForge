@@ -3,5 +3,11 @@ __pycache__/
 
 # Launcher-managed virtual environment, logs and setup lock
 .venv/
+.build-venv/
 logs/
 .planforge-setup.lock
+
+# Packaged native build artifacts
+build/
+dist/
+release-artifacts/

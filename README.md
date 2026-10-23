@@ -12,12 +12,16 @@ It integrates directly with the **Simple Function Point Calculator** (`fp_logic.
 
 ## Start Here
 
-| System | Launch PlanForge |
-| --- | --- |
-| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** |
-| **Linux** | Run **`./PlanForgeLauncher.sh`** |
-| **macOS** | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` |
-| **Any system** | `python PlanForgeLauncher.py` (or `python3`) |
+| System | Launch PlanForge | Desktop Shortcut / App Icon | Standalone Native App |
+| --- | --- | --- | --- |
+| **Windows 10/11** | Double-click **`PlanForgeLauncher.bat`** (or **`PlanForge.exe`**) | Double-click **`InstallApp.bat`** *(adds Start Menu & Desktop icon)* | **`PlanForge.exe`** *(from Releases/Actions, or run **`BuildApp.bat`**)* |
+| **Linux** | Run **`./PlanForgeLauncher.sh`** (or **`PlanForge-Linux-x86_64.AppImage`**) | Run **`./InstallApp.sh`** *(adds XDG app menu entry + icon)* | **`PlanForge-Linux-x86_64.AppImage`** *(from Releases/Actions, or run **`./BuildApp.sh`**)* |
+| **macOS** *(unsupported native launcher)* | Double-click **`PlanForgeLauncher.command`**, or run `./PlanForgeLauncher.sh` | *No official macOS native launcher* | *No official macOS standalone build* |
+| **Any system** | `python PlanForgeLauncher.py` (or `python3`) | — | — |
+
+> **Note on macOS:** PlanForge currently has **no official native macOS application launcher**. On macOS, run from source as before using `PlanForgeLauncher.command`, `./PlanForgeLauncher.sh`, or `python3 PlanForgeLauncher.py`.
+
+All Windows (`planforge.ico`, 16–256 px) and Linux (`planforge.png`, 16–512 px) native application icons — plus live window titlebar, taskbar, and dock icons inside the running GUI — are generated directly from `docs/icon_transparent_background.png` via `python -m planforge.icons` (standard library only).
 
 The launcher detects your operating system, prepares a project-local `.venv`,
 installs any declared dependencies and starts the application. The older
