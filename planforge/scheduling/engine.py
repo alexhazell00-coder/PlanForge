@@ -10,9 +10,8 @@ from __future__ import annotations
 import math
 from collections import defaultdict, deque
 from datetime import date, timedelta
-from typing import Sequence
 
-from planforge.model import Calendar, Dependency, Project, Resource, Task
+from planforge.model import Calendar, Dependency, Project, Task
 
 
 def is_working_day(target_date: date, calendar: Calendar | None = None) -> bool:
@@ -57,18 +56,20 @@ def working_days_between(start: date, finish: date, calendar: Calendar | None = 
 def calculate_daily_capacity(task: Task, project: Project) -> float:
     """Calculate the hours of daily work capacity allocated to a task.
 
-    If nobody is assigned, defaults to 8.0 hours.
-    Otherwise, sum over assigned people of (allocation % * that person's daily hours).
+    Material/cost resources do not contribute labour hours. If no work resource
+    is assigned, defaults to 8.0 hours per day.
     """
-    assignments = [a for a in project.assignments if a.task_id == task.id]
-    if not assignments:
+    res_map = {r.id: r for r in project.resources}
+    work_assignments = [
+        a for a in project.assignments
+        if a.task_id == task.id and (res_map.get(a.resource_id) is None or res_map[a.resource_id].resource_type == "work")
+    ]
+    if not work_assignments:
         return 8.0
 
-    res_map = {r.id: r for r in project.resources}
     total_capacity = 0.0
-    for a in assignments:
+    for a in work_assignments:
         res = res_map.get(a.resource_id)
-        # Standard working day is 8 hours unless specified
         person_hours_per_day = 8.0
         if res and "hours_per_day" in res.custom_fields:
             try:
@@ -80,37 +81,81 @@ def calculate_daily_capacity(task: Task, project: Project) -> float:
     return max(1.0, total_capacity)
 
 
+def _task_duration_days(task: Task, project: Project) -> tuple[bool, int]:
+    is_m = task.milestone or task.task_type == "milestone"
+    if is_m:
+        return True, 0
+    if task.duration is not None and task.duration_unit == "day":
+        return False, max(1, int(round(task.duration)))
+    if task.estimated_work is not None:
+        capacity = calculate_daily_capacity(task, project)
+        return False, max(1, math.ceil(task.estimated_work / capacity))
+    return False, 1
+
+
 def schedule_project(project: Project) -> Project:
     """Perform forward and backward passes to compute schedule dates and float.
 
     Updates task start_date, finish_date, float, and identifies critical tasks.
     """
     cal = project.calendars[0] if project.calendars else None
-    proj_start = project.start_date or (
+    explicit_proj_start = project.start_date
+    proj_start = explicit_proj_start or (
         min((t.start_date for t in project.tasks if t.start_date), default=date.today())
     )
 
-    # Map children and parents
+    # Map children and parents (with cycle protection)
     tasks_by_id = {t.id: t for t in project.tasks}
     children_by_parent: dict[str, list[str]] = defaultdict(list)
     for t in project.tasks:
-        if t.parent_id:
+        if t.parent_id and t.parent_id in tasks_by_id and t.parent_id != t.id:
             children_by_parent[t.parent_id].append(t.id)
 
-    # Dependencies
+    leaf_descendants_cache: dict[str, list[str]] = {}
+
+    def leaf_descendants(task_id: str, stack: frozenset[str] = frozenset()) -> list[str]:
+        if task_id in leaf_descendants_cache:
+            return leaf_descendants_cache[task_id]
+        if task_id not in children_by_parent:
+            leaf_descendants_cache[task_id] = [task_id]
+            return [task_id]
+        leaves: list[str] = []
+        next_stack = stack | {task_id}
+        for child_id in children_by_parent[task_id]:
+            if child_id in next_stack:
+                continue
+            leaves.extend(leaf_descendants(child_id, next_stack))
+        result = leaves or [task_id]
+        leaf_descendants_cache[task_id] = result
+        return result
+
+    # Expand dependencies across summary tasks down to leaf tasks
     preds_map: dict[str, list[Dependency]] = defaultdict(list)
     succs_map: dict[str, list[Dependency]] = defaultdict(list)
     for dep in project.dependencies:
-        if dep.predecessor_id in tasks_by_id and dep.successor_id in tasks_by_id:
-            preds_map[dep.successor_id].append(dep)
-            succs_map[dep.predecessor_id].append(dep)
+        if dep.predecessor_id not in tasks_by_id or dep.successor_id not in tasks_by_id:
+            continue
+        for pred_leaf in leaf_descendants(dep.predecessor_id):
+            for succ_leaf in leaf_descendants(dep.successor_id):
+                if pred_leaf == succ_leaf:
+                    continue
+                eff_dep = (
+                    dep
+                    if (pred_leaf == dep.predecessor_id and succ_leaf == dep.successor_id)
+                    else Dependency(
+                        id=dep.id,
+                        predecessor_id=pred_leaf,
+                        successor_id=succ_leaf,
+                        relationship_type=dep.relationship_type,
+                        lag=dep.lag,
+                        lag_unit=dep.lag_unit,
+                    )
+                )
+                preds_map[succ_leaf].append(eff_dep)
+                succs_map[pred_leaf].append(eff_dep)
 
-    # Topological sort for leaf tasks
-    in_degree: dict[str, int] = {t.id: 0 for t in project.tasks}
-    for dep in project.dependencies:
-        if dep.successor_id in in_degree and dep.predecessor_id in tasks_by_id:
-            in_degree[dep.successor_id] += 1
-
+    # Topological sort
+    in_degree: dict[str, int] = {t.id: len(preds_map.get(t.id, ())) for t in project.tasks}
     queue = deque([t_id for t_id, deg in in_degree.items() if deg == 0])
     topo_order: list[str] = []
     while queue:
@@ -133,67 +178,70 @@ def schedule_project(project: Project) -> Project:
     for t_id in topo_order:
         task = tasks_by_id[t_id]
         if task.id in children_by_parent:
-            # Summary task dates are determined by children later
+            # Summary task dates are aggregated from children below
             continue
 
-        # Calculate duration in working days
-        is_m = task.milestone or task.task_type == "milestone"
-        if is_m:
-            dur_days = 0
-        elif task.duration is not None and task.duration_unit == "day":
-            dur_days = max(1, int(round(task.duration)))
-        elif task.estimated_work is not None:
-            capacity = calculate_daily_capacity(task, project)
-            dur_days = max(1, math.ceil(task.estimated_work / capacity))
+        is_m, dur_days = _task_duration_days(task, project)
+
+        if task.constraint_type == "must_start_on" and task.constraint_date is not None:
+            t_start = task.constraint_date
+            t_finish = t_start if (is_m or dur_days == 0) else add_working_days(t_start, dur_days - 1, cal)
+        elif task.constraint_type == "must_finish_on" and task.constraint_date is not None:
+            t_finish = task.constraint_date
+            t_start = t_finish if (is_m or dur_days == 0) else add_working_days(t_finish, -max(0, dur_days - 1), cal)
+        elif task.schedule_mode == "manual" and (task.constraint_date or task.start_date) is not None:
+            t_start = task.constraint_date or task.start_date  # type: ignore[assignment]
+            t_finish = t_start if (is_m or dur_days == 0) else add_working_days(t_start, dur_days - 1, cal)
         else:
-            dur_days = 1
+            candidate_starts = [] if preds_map.get(t_id) else [proj_start]
+            if task.constraint_type == "start_no_earlier_than" and task.constraint_date is not None:
+                candidate_starts.append(task.constraint_date)
+            elif task.constraint_type == "finish_no_earlier_than" and task.constraint_date is not None:
+                candidate_starts.append(add_working_days(task.constraint_date, -max(0, dur_days - 1), cal))
 
-        # Determine earliest valid start date
-        candidate_starts = [proj_start]
-        if task.start_date:
-            candidate_starts.append(task.start_date)
+            for dep in preds_map.get(t_id, []):
+                pred_id = dep.predecessor_id
+                pred_finish = earliest_finish.get(pred_id, proj_start)
+                pred_start = earliest_start.get(pred_id, proj_start)
+                lag_days = int(round(dep.lag))
 
-        for dep in preds_map.get(t_id, []):
-            pred_id = dep.predecessor_id
-            pred_finish = earliest_finish.get(pred_id, proj_start)
-            pred_start = earliest_start.get(pred_id, proj_start)
-            lag_days = int(round(dep.lag))
+                if dep.relationship_type == "finish_to_start":
+                    req_start = add_working_days(pred_finish, lag_days + 1, cal)
+                    candidate_starts.append(req_start)
+                elif dep.relationship_type == "start_to_start":
+                    req_start = add_working_days(pred_start, lag_days, cal)
+                    candidate_starts.append(req_start)
+                elif dep.relationship_type == "finish_to_finish":
+                    req_fin = add_working_days(pred_finish, lag_days, cal)
+                    req_start = add_working_days(req_fin, -max(0, dur_days - 1), cal)
+                    candidate_starts.append(req_start)
+                elif dep.relationship_type == "start_to_finish":
+                    req_fin = add_working_days(pred_start, lag_days, cal)
+                    req_start = add_working_days(req_fin, -max(0, dur_days - 1), cal)
+                    candidate_starts.append(req_start)
 
-            if dep.relationship_type == "finish_to_start":
-                req_start = add_working_days(pred_finish, lag_days + 1, cal)
-                candidate_starts.append(req_start)
-            elif dep.relationship_type == "start_to_start":
-                req_start = add_working_days(pred_start, lag_days, cal)
-                candidate_starts.append(req_start)
-            elif dep.relationship_type == "finish_to_finish":
-                # finish >= pred_finish + lag => start >= pred_finish + lag - dur
-                req_fin = add_working_days(pred_finish, lag_days, cal)
-                req_start = add_working_days(req_fin, -max(0, dur_days - 1), cal)
-                candidate_starts.append(req_start)
-            elif dep.relationship_type == "start_to_finish":
-                req_fin = add_working_days(pred_start, lag_days, cal)
-                req_start = add_working_days(req_fin, -max(0, dur_days - 1), cal)
-                candidate_starts.append(req_start)
+            t_start = max(candidate_starts)
+            if not is_working_day(t_start, cal):
+                t_start = add_working_days(t_start, 0, cal)
 
-        t_start = max(candidate_starts)
-        if not is_working_day(t_start, cal):
-            t_start = add_working_days(t_start, 0, cal)
-
-        if is_m or dur_days == 0:
-            t_finish = t_start
-        else:
-            t_finish = add_working_days(t_start, dur_days - 1, cal)
+            if is_m or dur_days == 0:
+                t_finish = t_start
+            else:
+                t_finish = add_working_days(t_start, dur_days - 1, cal)
 
         earliest_start[t_id] = t_start
         earliest_finish[t_id] = t_finish
 
     # Aggregate summary tasks bottom-up
-    def aggregate_summary(parent_id: str) -> tuple[date, date]:
+    def aggregate_summary(parent_id: str, stack: frozenset[str] = frozenset()) -> tuple[date, date]:
         child_starts: list[date] = []
         child_finishes: list[date] = []
+        next_stack = stack | {parent_id}
         for c_id in children_by_parent.get(parent_id, []):
+            if c_id in next_stack:
+                continue
             if c_id in children_by_parent:
-                cs, cf = aggregate_summary(c_id)
+                cs, cf = aggregate_summary(c_id, next_stack)
             else:
                 cs = earliest_start.get(c_id, proj_start)
                 cf = earliest_finish.get(c_id, proj_start)
@@ -219,16 +267,7 @@ def schedule_project(project: Project) -> Project:
         if task.id in children_by_parent:
             continue
 
-        is_m = task.milestone or task.task_type == "milestone"
-        if is_m:
-            dur_days = 0
-        elif task.duration is not None and task.duration_unit == "day":
-            dur_days = max(1, int(round(task.duration)))
-        elif task.estimated_work is not None:
-            capacity = calculate_daily_capacity(task, project)
-            dur_days = max(1, math.ceil(task.estimated_work / capacity))
-        else:
-            dur_days = 1
+        is_m, dur_days = _task_duration_days(task, project)
 
         candidate_finishes = [max_finish]
         if task.deadline:
@@ -247,7 +286,6 @@ def schedule_project(project: Project) -> Project:
                 req_finish = add_working_days(succ_finish, -lag_days, cal)
                 candidate_finishes.append(req_finish)
             elif dep.relationship_type == "start_to_start":
-                # Start must be <= succ_start - lag => finish <= start + dur - 1
                 req_start = add_working_days(succ_start, -lag_days, cal)
                 req_finish = add_working_days(req_start, max(0, dur_days - 1), cal)
                 candidate_finishes.append(req_finish)
@@ -284,8 +322,23 @@ def schedule_project(project: Project) -> Project:
             t.custom_fields["total_float"] = 0
             t.custom_fields["is_critical"] = False
 
-    project.start_date = min((t.start_date for t in project.tasks if t.start_date), default=proj_start)
-    project.finish_date = max((t.finish_date for t in project.tasks if t.finish_date), default=max_finish)
+    task_starts = [t.start_date for t in project.tasks if t.start_date]
+    task_finishes = [t.finish_date for t in project.tasks if t.finish_date]
+    if explicit_proj_start is None and not project.tasks:
+        project.start_date = None
+        project.finish_date = None
+    elif explicit_proj_start is not None:
+        project.start_date = (
+            min([explicit_proj_start, *task_starts])
+            if any(s < explicit_proj_start for s in task_starts)
+            else explicit_proj_start
+        )
+        project.finish_date = max(task_finishes, default=max_finish)
+        if project.finish_date < project.start_date:
+            project.finish_date = project.start_date
+    else:
+        project.start_date = min(task_starts, default=proj_start)
+        project.finish_date = max(task_finishes, default=max_finish)
 
     return project
 

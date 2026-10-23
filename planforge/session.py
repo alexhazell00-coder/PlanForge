@@ -15,7 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from planforge import estimation
 from planforge.interchange import (
@@ -67,6 +67,9 @@ class TaskRow:
     is_summary: bool
 
 
+_UNSET_DATE: Any = object()
+
+
 @dataclass(slots=True)
 class TaskEdit:
     """Everything the task editor can change in one save."""
@@ -84,6 +87,12 @@ class TaskEdit:
     # Function-point estimate. Leave ``fp_points`` as None to use the manual duration.
     fp_complexity: str | None = None
     fp_points: float | None = None
+    # Optional explicit start date: omit to preserve current scheduling behavior,
+    # pass ``None`` to reset to automatic scheduling, or pass a ``date`` to pin it.
+    start_date: Any = _UNSET_DATE
+    # Optional material assignments: list of ``(resource_id, quantity)`` pairs.
+    # Leave ``None`` to preserve existing material assignments on the task.
+    material_assignments: list[tuple[str, float]] | None = None
 
 
 @dataclass(slots=True)
@@ -99,6 +108,9 @@ class Overview:
     total_cost: float
     currency: str
     critical_tasks: list[Task]
+    material_count: int = 0
+    labour_cost: float = 0.0
+    material_cost: float = 0.0
 
 
 @dataclass(slots=True)
@@ -110,6 +122,15 @@ class PersonWorkload:
     task_count: int
     hours: float
     cost: float
+    resource_type: str = "work"
+    group: str = ""
+    material_label: str = ""
+    initials: str = ""
+    max_units: float = 1.0
+    units_total: float = 0.0
+    parent_id: str | None = None
+    depth: int = 0
+    is_summary: bool = False
 
 
 def format_money(amount: float, currency: str) -> str:
@@ -471,12 +492,40 @@ class ProjectSession:
         return None
 
     def assigned_resource_of(self, task_id: str) -> Resource | None:
+        res_by_id = {r.id: r for r in self.project.resources}
         for a in self.project.assignments:
             if a.task_id == task_id:
-                for r in self.project.resources:
-                    if r.id == a.resource_id:
-                        return r
+                r = res_by_id.get(a.resource_id)
+                if r is not None and r.resource_type == "work":
+                    return r
         return None
+
+    def material_assignments_of(self, task_id: str) -> list[tuple[Resource, Assignment]]:
+        res_by_id = {r.id: r for r in self.project.resources}
+        items: list[tuple[Resource, Assignment]] = []
+        for a in self.project.assignments:
+            if a.task_id == task_id:
+                r = res_by_id.get(a.resource_id)
+                if r is not None and r.resource_type != "work":
+                    items.append((r, a))
+        return items
+
+    def task_resource_names(self, task_id: str) -> str:
+        parts: list[str] = []
+        person = self.assigned_resource_of(task_id)
+        if person is not None:
+            parts.append(person.name)
+        for mat, assign in self.material_assignments_of(task_id):
+            label = str(mat.custom_fields.get("material_label") or "").strip()
+            qty = assign.units
+            qty_str = f"{qty:g}" if qty != 1.0 or label else ""
+            if qty_str and label:
+                parts.append(f"{mat.name} ({qty_str} {label})")
+            elif qty_str:
+                parts.append(f"{mat.name} ×{qty_str}")
+            else:
+                parts.append(mat.name)
+        return ", ".join(parts)
 
     def predecessor_names(self, task_id: str) -> str:
         dep = self.predecessor_of(task_id)
@@ -507,6 +556,27 @@ class ProjectSession:
             resource = self.find_resource(edit.resource_id)
         else:
             resource = None
+
+        validated_materials: list[tuple[Resource, float]] | None = None
+        if edit.material_assignments is not None:
+            validated_materials = []
+            for mat_id, raw_qty in edit.material_assignments:
+                mat_res = self.find_resource(mat_id)
+                if raw_qty is None or not math.isfinite(raw_qty) or raw_qty <= 0:
+                    raise SessionError(f"Quantity for '{mat_res.name}' must be greater than zero.")
+                validated_materials.append((mat_res, float(raw_qty)))
+
+        if edit.start_date is not _UNSET_DATE:
+            if edit.start_date is None:
+                task.constraint_type = None
+                task.constraint_date = None
+                task.schedule_mode = "auto"
+            elif isinstance(edit.start_date, date) and not isinstance(edit.start_date, datetime):
+                task.constraint_type = "must_start_on"
+                task.constraint_date = edit.start_date
+                task.schedule_mode = "auto"
+            else:
+                raise SessionError("Invalid task start date.")
 
         task.name = name
         task.description = edit.description.strip()
@@ -550,6 +620,15 @@ class ProjectSession:
                 lag_unit="day",
             ))
 
+        res_by_id = {r.id: r for r in self.project.resources}
+        preserved_non_work = (
+            [
+                a for a in self.project.assignments
+                if a.task_id == task_id and res_by_id.get(a.resource_id) is not None and res_by_id[a.resource_id].resource_type != "work"
+            ]
+            if validated_materials is None
+            else []
+        )
         self.project.assignments = [a for a in self.project.assignments if a.task_id != task_id]
         if resource is not None:
             if work_hours is None:
@@ -563,7 +642,49 @@ class ProjectSession:
                 work=work_hours,
                 cost=cost,
             ))
-        self._changed()
+
+        mat_total_cost = 0.0
+        if validated_materials is not None:
+            for mat_res, qty in validated_materials:
+                line_cost = qty * (mat_res.standard_rate or 0.0) + (mat_res.cost_per_use or 0.0)
+                mat_total_cost += line_cost
+                self.project.assignments.append(Assignment(
+                    id=new_id(),
+                    task_id=task_id,
+                    resource_id=mat_res.id,
+                    units=qty,
+                    work=0.0,
+                    cost=line_cost,
+                ))
+        else:
+            for existing_mat in preserved_non_work:
+                mat_res = res_by_id[existing_mat.resource_id]
+                mat_total_cost += (
+                    existing_mat.cost
+                    if existing_mat.cost is not None
+                    else existing_mat.units * (mat_res.standard_rate or 0.0) + (mat_res.cost_per_use or 0.0)
+                )
+                self.project.assignments.append(existing_mat)
+
+        if edit.fp_points is None:
+            task.estimated_work = work_hours
+            if cost is not None or validated_materials or preserved_non_work:
+                task.estimated_cost = (cost or 0.0) + mat_total_cost
+            else:
+                task.estimated_cost = None
+        elif mat_total_cost > 0:
+            task.estimated_cost = (cost or 0.0) + mat_total_cost
+
+        self._normalize_hierarchy()
+        schedule_project(self.project)
+        if edit.start_date is not _UNSET_DATE and isinstance(edit.start_date, date):
+            task_starts = [t.start_date for t in self.project.tasks if t.start_date]
+            if task_starts:
+                self.project.start_date = min(task_starts)
+                if self.project.finish_date and self.project.finish_date < self.project.start_date:
+                    self.project.finish_date = self.project.start_date
+        self.dirty = True
+        self._record_history_change()
 
     def task_fp_defaults(self, task_id: str) -> dict:
         """Return the stored function-point values for a task, if it has any."""
@@ -575,46 +696,315 @@ class ProjectSession:
         return {"points": fp.function_points, "complexity": complexity}
 
     # ------------------------------------------------------------------
-    # People
+    # People & Materials
     # ------------------------------------------------------------------
 
-    def add_person(self, name: str, rate: float, hours_per_day: float) -> Resource:
+    def _normalize_resource_hierarchy(self) -> dict[str, tuple[int, bool]]:
+        """Validate resource parent links and return ``{id: (depth, is_summary)}``."""
+        resources = self.project.resources
+        ids = {r.id for r in resources}
+        for r in resources:
+            pid = r.custom_fields.get("parent_id")
+            if not isinstance(pid, str) or pid not in ids or pid == r.id:
+                r.custom_fields.pop("parent_id", None)
+
+        children: dict[str | None, list[Resource]] = defaultdict(list)
+        for r in resources:
+            pid = r.custom_fields.get("parent_id")
+            children[pid if isinstance(pid, str) else None].append(r)
+
+        ordered: list[Resource] = []
+        visited: set[str] = set()
+        depths: dict[str, int] = {}
+
+        def walk(parent_id: str | None, depth: int) -> None:
+            for child in children.get(parent_id, []):
+                if child.id in visited:
+                    continue
+                visited.add(child.id)
+                depths[child.id] = depth
+                ordered.append(child)
+                walk(child.id, depth + 1)
+
+        walk(None, 0)
+        for r in resources:
+            if r.id not in visited:
+                r.custom_fields.pop("parent_id", None)
+                children[None].append(r)
+                walk(None, 0)
+
+        self.project.resources[:] = ordered
+        summary_ids = {
+            str(r.custom_fields["parent_id"])
+            for r in ordered
+            if isinstance(r.custom_fields.get("parent_id"), str)
+        }
+        return {r.id: (depths.get(r.id, 0), r.id in summary_ids) for r in ordered}
+
+    def add_person(
+        self,
+        name: str,
+        rate: float,
+        hours_per_day: float = DEFAULT_HOURS_PER_DAY,
+        *,
+        resource_type: str = "work",
+        group: str = "",
+        material_label: str = "",
+        initials: str = "",
+        max_units: float = 1.0,
+        parent_id: str | None = None,
+    ) -> Resource:
         name = _clean_text(name, "Name")
-        rate, hours_per_day = _check_rate_and_hours(rate, hours_per_day)
-        resource = Resource(name=name, standard_rate=rate, custom_fields={"hours_per_day": hours_per_day})
+        rtype = resource_type if resource_type in {"work", "material", "cost"} else "work"
+        if rtype == "work":
+            rate, hours_per_day = _check_rate_and_hours(rate, hours_per_day)
+        else:
+            if rate is None or not math.isfinite(rate) or rate < 0:
+                raise SessionError("Unit cost must be a number of zero or more.")
+            hours_per_day = DEFAULT_HOURS_PER_DAY
+        if max_units is None or not math.isfinite(max_units) or max_units < 0:
+            raise SessionError("Max units must be zero or more.")
+        if parent_id is not None:
+            self.find_resource(parent_id)
+
+        custom: dict[str, Any] = {}
+        if rtype == "work":
+            custom["hours_per_day"] = hours_per_day
+        clean_group = (group or "").strip()
+        clean_label = (material_label or "").strip()
+        clean_initials = (initials or "").strip() or name[0]
+        if clean_group:
+            custom["group"] = clean_group
+        if rtype == "material" and clean_label:
+            custom["material_label"] = clean_label
+        if clean_initials:
+            custom["initials"] = clean_initials
+        if parent_id is not None:
+            custom["parent_id"] = parent_id
+
+        rate_unit = clean_label if (rtype == "material" and clean_label) else ("unit" if rtype == "material" else "hour")
+        resource = Resource(
+            name=name,
+            resource_type=rtype,
+            max_units=float(max_units) if rtype == "work" else 1.0,
+            standard_rate=float(rate),
+            standard_rate_unit=rate_unit,
+            custom_fields=custom,
+        )
         self.project.resources.append(resource)
+        self._normalize_resource_hierarchy()
         self._changed()
         return resource
 
-    def update_person(self, resource_id: str, name: str, rate: float, hours_per_day: float) -> None:
+    def add_material(
+        self,
+        name: str,
+        rate: float,
+        *,
+        material_label: str = "",
+        group: str = "",
+        initials: str = "",
+        parent_id: str | None = None,
+    ) -> Resource:
+        """Create a material/equipment resource with optional unit label and group."""
+        return self.add_person(
+            name,
+            rate,
+            resource_type="material",
+            group=group,
+            material_label=material_label,
+            initials=initials,
+            parent_id=parent_id,
+        )
+
+    def update_person(
+        self,
+        resource_id: str,
+        name: str,
+        rate: float,
+        hours_per_day: float = DEFAULT_HOURS_PER_DAY,
+        *,
+        resource_type: str | None = None,
+        group: str | None = None,
+        material_label: str | None = None,
+        initials: str | None = None,
+        max_units: float | None = None,
+        parent_id: Any = _UNSET_DATE,
+    ) -> None:
         resource = self.find_resource(resource_id)
         name = _clean_text(name, "Name")
-        rate, hours_per_day = _check_rate_and_hours(rate, hours_per_day)
+        rtype = resource_type if resource_type in {"work", "material", "cost"} else resource.resource_type
+        if rtype == "work":
+            rate, hours_per_day = _check_rate_and_hours(rate, hours_per_day)
+            resource.custom_fields["hours_per_day"] = hours_per_day
+            resource.custom_fields.pop("material_label", None)
+            resource.standard_rate_unit = "hour"
+        else:
+            if rate is None or not math.isfinite(rate) or rate < 0:
+                raise SessionError("Unit cost must be a number of zero or more.")
+            if material_label is not None:
+                clean_label = material_label.strip()
+                if clean_label:
+                    resource.custom_fields["material_label"] = clean_label
+                else:
+                    resource.custom_fields.pop("material_label", None)
+            lbl = str(resource.custom_fields.get("material_label") or "").strip()
+            resource.standard_rate_unit = lbl or "unit"
+
+        if max_units is not None:
+            if not math.isfinite(max_units) or max_units < 0:
+                raise SessionError("Max units must be zero or more.")
+            resource.max_units = float(max_units) if rtype == "work" else 1.0
+        if group is not None:
+            clean_group = group.strip()
+            if clean_group:
+                resource.custom_fields["group"] = clean_group
+            else:
+                resource.custom_fields.pop("group", None)
+        if initials is not None:
+            clean_init = initials.strip()
+            if clean_init:
+                resource.custom_fields["initials"] = clean_init
+            else:
+                resource.custom_fields.pop("initials", None)
+        if parent_id is not _UNSET_DATE:
+            if parent_id is None:
+                resource.custom_fields.pop("parent_id", None)
+            else:
+                if parent_id == resource_id:
+                    raise SessionError("A resource cannot be inside itself.")
+                self.find_resource(parent_id)
+                resource.custom_fields["parent_id"] = parent_id
+
         resource.name = name
-        resource.standard_rate = rate
-        resource.custom_fields["hours_per_day"] = hours_per_day
+        resource.resource_type = rtype
+        resource.standard_rate = float(rate)
+
+        # Keep existing assignment costs synchronized with updated rate
+        affected_tasks: set[str] = set()
+        for a in self.project.assignments:
+            if a.resource_id == resource.id:
+                affected_tasks.add(a.task_id)
+                if rtype == "work":
+                    a.cost = (a.work or 0.0) * (resource.standard_rate or 0.0)
+                else:
+                    a.work = 0.0
+                    a.cost = a.units * (resource.standard_rate or 0.0) + (resource.cost_per_use or 0.0)
+        res_by_id = {r.id: r for r in self.project.resources}
+        for t in self.project.tasks:
+            if t.id in affected_tasks:
+                t_assigns = [a for a in self.project.assignments if a.task_id == t.id]
+                t.estimated_cost = sum(a.cost or 0.0 for a in t_assigns) if t_assigns else None
+                t.estimated_work = sum(
+                    a.work or 0.0
+                    for a in t_assigns
+                    if res_by_id.get(a.resource_id) is None or res_by_id[a.resource_id].resource_type == "work"
+                ) or None
+
+        self._normalize_resource_hierarchy()
+        self._changed()
+
+    def indent_resource(self, resource_id: str) -> None:
+        """Make the resource a child of the sibling directly above it."""
+        self._normalize_resource_hierarchy()
+        resource = self.find_resource(resource_id)
+        cur_parent = resource.custom_fields.get("parent_id")
+        siblings = [r for r in self.project.resources if r.custom_fields.get("parent_id") == cur_parent]
+        index = next(i for i, r in enumerate(siblings) if r.id == resource_id)
+        if index == 0:
+            raise SessionError("There is no row above this one to indent under.")
+        resource.custom_fields["parent_id"] = siblings[index - 1].id
+        self._normalize_resource_hierarchy()
+        self._changed()
+
+    def outdent_resource(self, resource_id: str) -> None:
+        """Move the resource up one outline level."""
+        self._normalize_resource_hierarchy()
+        resource = self.find_resource(resource_id)
+        cur_parent_id = resource.custom_fields.get("parent_id")
+        if not isinstance(cur_parent_id, str):
+            raise SessionError("This resource is already at the top level.")
+        parent = self.find_resource(cur_parent_id)
+        grandparent = parent.custom_fields.get("parent_id")
+        if isinstance(grandparent, str):
+            resource.custom_fields["parent_id"] = grandparent
+        else:
+            resource.custom_fields.pop("parent_id", None)
+        # Position directly after the former parent's subtree
+        subtree_ids = {parent.id}
+        changed = True
+        while changed:
+            changed = False
+            for r in self.project.resources:
+                if r.custom_fields.get("parent_id") in subtree_ids and r.id not in subtree_ids:
+                    subtree_ids.add(r.id)
+                    changed = True
+        subtree_ids.discard(resource.id)
+        without = [r for r in self.project.resources if r.id != resource.id]
+        last_idx = max(i for i, r in enumerate(without) if r.id in subtree_ids)
+        without.insert(last_idx + 1, resource)
+        self.project.resources[:] = without
+        self._normalize_resource_hierarchy()
         self._changed()
 
     def delete_person(self, resource_id: str) -> None:
         resource = self.find_resource(resource_id)
+        parent_id = resource.custom_fields.get("parent_id")
+        for child in self.project.resources:
+            if child.custom_fields.get("parent_id") == resource_id:
+                if isinstance(parent_id, str):
+                    child.custom_fields["parent_id"] = parent_id
+                else:
+                    child.custom_fields.pop("parent_id", None)
+        affected_tasks = {a.task_id for a in self.project.assignments if a.resource_id == resource_id}
         self.project.resources.remove(resource)
         self.project.assignments = [a for a in self.project.assignments if a.resource_id != resource_id]
+        for t in self.project.tasks:
+            if t.id in affected_tasks:
+                remaining = [a for a in self.project.assignments if a.task_id == t.id]
+                t.estimated_cost = sum(a.cost or 0.0 for a in remaining) if remaining else None
+        self._normalize_resource_hierarchy()
         self._changed()
 
     def person_workloads(self) -> list[PersonWorkload]:
-        rows = []
+        hierarchy = self._normalize_resource_hierarchy()
+        rows: list[PersonWorkload] = []
         for r in self.project.resources:
             assigned = [a for a in self.project.assignments if a.resource_id == r.id]
-            hours = sum(a.work or 0.0 for a in assigned)
             rate = r.standard_rate
+            if r.resource_type == "work":
+                hours = sum(a.work or 0.0 for a in assigned)
+                units_total = sum(a.units for a in assigned)
+                cost = sum(
+                    a.cost if a.cost is not None else (a.work or 0.0) * (rate or 0.0)
+                    for a in assigned
+                )
+            else:
+                hours = 0.0
+                units_total = sum(a.units for a in assigned)
+                cost = sum(
+                    a.cost if a.cost is not None else (a.units * (rate or 0.0) + (r.cost_per_use or 0.0))
+                    for a in assigned
+                )
+            depth, is_summary = hierarchy.get(r.id, (0, False))
+            parent_id = r.custom_fields.get("parent_id")
             rows.append(PersonWorkload(
                 resource_id=r.id,
                 name=r.name,
                 rate=rate,
-                hours_per_day=_hours_per_day(r),
+                hours_per_day=_hours_per_day(r) if r.resource_type == "work" else 0.0,
                 task_count=len(assigned),
                 hours=hours,
-                cost=hours * (rate or 0.0),
+                cost=cost,
+                resource_type=r.resource_type,
+                group=str(r.custom_fields.get("group") or ""),
+                material_label=str(r.custom_fields.get("material_label") or ""),
+                initials=str(r.custom_fields.get("initials") or (r.name[:1] if r.name else "")),
+                max_units=r.max_units,
+                units_total=units_total,
+                parent_id=parent_id if isinstance(parent_id, str) else None,
+                depth=depth,
+                is_summary=is_summary,
             ))
         return rows
 
@@ -637,6 +1027,22 @@ class ProjectSession:
         days = sorted(set(int(d) for d in working_days))
         if not days or any(d < 0 or d > 6 for d in days):
             raise SessionError("Select at least one working day.")
+        old_start = self.project.start_date
+        if old_start is not None and start_date is not None and start_date != old_start:
+            delta = start_date - old_start
+            for task in self.project.tasks:
+                if task.constraint_date is not None:
+                    task.constraint_date = task.constraint_date + delta
+                if task.schedule_mode == "manual":
+                    if task.start_date is not None:
+                        task.start_date = task.start_date + delta
+                    if task.finish_date is not None:
+                        task.finish_date = task.finish_date + delta
+        elif start_date is None and old_start is not None:
+            for task in self.project.tasks:
+                if task.constraint_date == old_start:
+                    task.constraint_date = None
+                    task.constraint_type = None
         self.project.name = name
         self.project.description = description.strip()
         self.project.start_date = start_date
@@ -657,8 +1063,14 @@ class ProjectSession:
 
     def overview(self) -> Overview:
         critical = [t for t in self.project.tasks if t.custom_fields.get("is_critical")]
+        workloads = self.person_workloads()
+        labour_cost = sum(w.cost for w in workloads if w.resource_type == "work")
+        material_cost = sum(w.cost for w in workloads if w.resource_type != "work")
+        task_est_cost = sum(t.estimated_cost or 0.0 for t in self.project.tasks)
         total_hours = sum(t.estimated_work or 0.0 for t in self.project.tasks)
-        total_cost = sum(t.estimated_cost or 0.0 for t in self.project.tasks)
+        total_cost = max(task_est_cost, labour_cost + material_cost)
+        work_count = sum(1 for r in self.project.resources if r.resource_type == "work")
+        material_count = sum(1 for r in self.project.resources if r.resource_type != "work")
         return Overview(
             name=self.project.name,
             start_date=self.project.start_date,
@@ -666,11 +1078,14 @@ class ProjectSession:
             task_count=len(self.project.tasks),
             milestone_count=sum(1 for t in self.project.tasks if t.milestone or t.task_type == "milestone"),
             dependency_count=len(self.project.dependencies),
-            resource_count=len(self.project.resources),
+            resource_count=work_count,
             total_hours=total_hours,
             total_cost=total_cost,
             currency=self.project.currency,
             critical_tasks=critical,
+            material_count=material_count,
+            labour_cost=labour_cost,
+            material_cost=material_cost,
         )
 
     def summary(self) -> ProjectSummary:
@@ -680,8 +1095,7 @@ class ProjectSession:
         """Plain-text report, the same layout as the earlier web summary."""
         p = self.project
         symbol = CURRENCY_SYMBOLS.get(p.currency, p.currency)
-        total_cost = sum(t.estimated_cost or 0.0 for t in p.tasks)
-        total_hours = sum(t.estimated_work or 0.0 for t in p.tasks)
+        ov = self.overview()
         lines = [
             "PLANFORGE PROJECT SUMMARY REPORT",
             "=================================",
@@ -697,9 +1111,12 @@ class ProjectSession:
             f"Total Tasks:        {len(p.tasks)}",
             f"Milestones:         {sum(1 for t in p.tasks if t.milestone)}",
             f"Dependencies:       {len(p.dependencies)}",
-            f"Team Members:       {len(p.resources)}",
-            f"Estimated Hours:    {total_hours:g} hours",
-            f"Total Labour Cost:  {symbol}{total_cost:,.2f}",
+            f"Team Members:       {ov.resource_count}",
+            f"Materials / Items:  {ov.material_count}",
+            f"Estimated Hours:    {ov.total_hours:g} hours",
+            f"Total Labour Cost:  {symbol}{ov.labour_cost if ov.labour_cost else ov.total_cost - ov.material_cost:,.2f}",
+            f"Material Cost:      {symbol}{ov.material_cost:,.2f}",
+            f"Total Project Cost: {symbol}{ov.total_cost:,.2f}",
             "",
             "CRITICAL PATH",
             "-------------",
@@ -711,9 +1128,20 @@ class ProjectSession:
                              f"{t.name} ({(t.duration or 1):g}d)")
         else:
             lines.append(" None detected or project not scheduled.")
+        workloads = self.person_workloads()
+        people_rows = [w for w in workloads if w.resource_type == "work"]
+        material_rows = [w for w in workloads if w.resource_type != "work"]
         lines += ["", "TEAM ALLOCATION & COSTS", "-----------------------"]
-        for w in self.person_workloads():
-            lines.append(f" * {w.name:<28}: {w.hours:>5g} hrs | {symbol}{w.cost:,.2f}")
+        for w in people_rows:
+            role_suffix = f" ({w.group})" if w.group else ""
+            lines.append(f" * {w.name + role_suffix:<28}: {w.hours:>5g} hrs | {symbol}{w.cost:,.2f}")
+        if material_rows:
+            lines += ["", "MATERIALS & EQUIPMENT COSTS", "---------------------------"]
+            for m in material_rows:
+                unit_lbl = f" {m.material_label}" if m.material_label else ""
+                lines.append(
+                    f" * {m.name:<28}: {m.units_total:>5g}{unit_lbl} @ {symbol}{(m.rate or 0.0):,.2f} | {symbol}{m.cost:,.2f}"
+                )
         lines += ["", f"Report generated on {(now or datetime.now()).isoformat(timespec='seconds')}"]
         return "\n".join(lines)
 

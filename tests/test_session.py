@@ -219,15 +219,137 @@ class PeopleTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
-    def test_settings_update_and_reschedule(self) -> None:
+    def test_settings_update_and_reschedule_forward_and_backward(self) -> None:
         s = ProjectSession()
         first = _task_named(s, "UI/UX Architecture & Wireframing")
-        s.update_settings(name="Renamed", description="New desc", start_date=date(2030, 1, 7),
-                          currency="USD", working_days=[0, 1, 2, 3, 4])
+        second = _task_named(s, "Frontend Implementation")
+
+        # Move earlier than today (2026-10-23) — previously reset back to today!
+        s.update_settings(
+            name="Earlier Start",
+            description="Retroactive start",
+            start_date=date(2026, 9, 1),
+            currency="GBP",
+            working_days=[0, 1, 2, 3, 4],
+        )
+        self.assertEqual(s.project.start_date, date(2026, 9, 1))
+        self.assertEqual(first.start_date, date(2026, 9, 1))
+        self.assertEqual(second.start_date, date(2026, 9, 7))
+
+        # Move far forward into 2030
+        s.update_settings(
+            name="Renamed",
+            description="New desc",
+            start_date=date(2030, 1, 7),
+            currency="USD",
+            working_days=[0, 1, 2, 3, 4],
+        )
         self.assertEqual(s.project.name, "Renamed")
         self.assertEqual(s.project.currency, "USD")
+        self.assertEqual(s.project.start_date, date(2030, 1, 7))
         self.assertEqual(first.start_date, date(2030, 1, 7))
         self.assertTrue(s.dirty)
+
+        # Move back earlier again after moving forward — must never ratchet!
+        s.update_settings(
+            name="Back to October",
+            description="Moved back again",
+            start_date=date(2026, 10, 19),
+            currency="USD",
+            working_days=[0, 1, 2, 3, 4],
+        )
+        self.assertEqual(s.project.start_date, date(2026, 10, 19))
+        self.assertEqual(first.start_date, date(2026, 10, 19))
+
+    def test_imported_constrained_and_manual_tasks_shift_with_project_start_and_persist_in_pfp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pfp_file = Path(tmp) / "projectlibre_import.pfp"
+            s = ProjectSession()
+            s.apply_import(s.preview_import(FIXTURES / "sample_projectlibre.xml"))
+            # Simulate tasks stamped with today's date (2026-10-23) in ProjectLibre
+            s.project.start_date = date(2026, 10, 23)
+            for idx, task in enumerate(s.project.tasks):
+                task.start_date = date(2026, 10, 23)
+                if idx == 1:
+                    task.constraint_type = "start_no_earlier_than"
+                    task.constraint_date = date(2026, 10, 23)
+            s.recalculate()
+            s.save(pfp_file)
+
+            reopened = ProjectSession()
+            reopened.open_pfp(pfp_file)
+            reopened.update_settings(
+                name=reopened.project.name,
+                description=reopened.project.description,
+                start_date=date(2026, 9, 14),
+                currency=reopened.project.currency,
+                working_days=[0, 1, 2, 3, 4],
+            )
+            self.assertEqual(reopened.project.start_date, date(2026, 9, 14))
+            self.assertEqual(min(t.start_date for t in reopened.project.tasks if t.start_date), date(2026, 9, 14))
+            reopened.save()
+
+            verified = ProjectSession()
+            verified.open_pfp(pfp_file)
+            self.assertEqual(verified.project.start_date, date(2026, 9, 14))
+
+    def test_empty_project_allows_clearing_and_setting_any_start_date(self) -> None:
+        s = ProjectSession()
+        s.new_project()
+        s.update_settings(name="Blank", description="", start_date=None, currency="GBP", working_days=[0, 1, 2, 3, 4])
+        self.assertIsNone(s.project.start_date)
+        self.assertIsNone(s.project.finish_date)
+
+        s.update_settings(
+            name="Blank",
+            description="",
+            start_date=date(2026, 8, 3),
+            currency="GBP",
+            working_days=[0, 1, 2, 3, 4],
+        )
+        self.assertEqual(s.project.start_date, date(2026, 8, 3))
+
+    def test_parse_date_input_supports_iso_uk_us_and_long_formats(self) -> None:
+        from planforge.config import parse_date_input, set_preference
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "PlanForge.conf"
+            self.assertIsNone(parse_date_input("   ", cfg))
+            self.assertEqual(parse_date_input("2026-9-1", cfg), date(2026, 9, 1))
+            self.assertEqual(parse_date_input("2026/09/01", cfg), date(2026, 9, 1))
+            self.assertEqual(parse_date_input("01/09/2026", cfg), date(2026, 9, 1))
+            self.assertEqual(parse_date_input("1 Sep 2026", cfg), date(2026, 9, 1))
+
+            set_preference("workspace", "date_format", "US", cfg)
+            self.assertEqual(parse_date_input("09/01/2026", cfg), date(2026, 9, 1))
+            self.assertEqual(parse_date_input("25/10/2026", cfg), date(2026, 10, 25))
+
+            with self.assertRaises(ValueError):
+                parse_date_input("2026-02-30", cfg)
+            with self.assertRaises(ValueError):
+                parse_date_input("not-a-date", cfg)
+
+    def test_task_edit_can_pin_and_reset_individual_task_start_date(self) -> None:
+        s = ProjectSession()
+        first = _task_named(s, "UI/UX Architecture & Wireframing")
+        second = _task_named(s, "Frontend Implementation")
+
+        # Pin first task to an earlier date than today
+        s.apply_task_edit(first.id, TaskEdit(name=first.name, duration=4, start_date=date(2026, 9, 7)))
+        self.assertEqual(first.start_date, date(2026, 9, 7))
+        self.assertEqual(second.start_date, date(2026, 9, 11))
+        self.assertEqual(s.project.start_date, date(2026, 9, 7))
+
+        # Reset task back to automatic scheduling and update project start date
+        s.apply_task_edit(first.id, TaskEdit(name=first.name, duration=4, start_date=None))
+        s.update_settings(
+            name=s.project.name,
+            description=s.project.description,
+            start_date=date(2026, 10, 5),
+            currency="GBP",
+            working_days=[0, 1, 2, 3, 4],
+        )
+        self.assertEqual(first.start_date, date(2026, 10, 5))
 
     def test_settings_validation(self) -> None:
         s = ProjectSession()
@@ -647,6 +769,91 @@ class CommandLineTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             cli_main(["--import-file", "/nonexistent/file.xml"])
         self.assertEqual(raised.exception.code, 1)
+
+
+class MaterialAndResourceHierarchyTests(unittest.TestCase):
+    def test_work_and_material_hierarchy_assignments_costs_reports_and_pfp_persistence(self) -> None:
+        from planforge.session import TaskEdit
+
+        s = ProjectSession()
+        s.new_project()
+        s.project.name = "IT Infrastructure Upgrade"
+        s.project.currency = "GBP"
+
+        md = s.add_person("MR.NewBrook", 35.0, 8.0, group="Managing director", initials="M")
+        pm = s.add_person("Alex Hazell", 30.0, 8.0, group="project manager", initials="A", parent_id=md.id)
+        net = s.add_person("network infrastructure team", 20.0, 8.0, group="junior network engineer", initials="n", parent_id=pm.id)
+        mats_hdr = s.add_material("Materials", 0.0, initials="M")
+        server = s.add_material("Dell PowerEdge server", 5000.0, material_label="unit", initials="D", parent_id=mats_hdr.id)
+        switch = s.add_material("Cisco 24-port network switch", 1200.0, material_label="unit", initials="C", parent_id=mats_hdr.id)
+        cable = s.add_material("cat6 network cabling", 6.49, material_label="metre", initials="c")
+        # Exact ProjectLibre OutlineLevel indent/outdent transitions:
+        # depth 0 -> 1st indent puts cable at depth 1 under Materials;
+        # depth 1 -> 2nd indent puts cable at depth 2 under switch;
+        # outdent steps back to depth 1 under Materials!
+        s.indent_resource(cable.id)
+        self.assertEqual(cable.custom_fields.get("parent_id"), mats_hdr.id)
+        s.indent_resource(cable.id)
+        self.assertEqual(cable.custom_fields.get("parent_id"), switch.id)
+        s.outdent_resource(cable.id)
+        self.assertEqual(cable.custom_fields.get("parent_id"), mats_hdr.id)
+
+        task = s.add_task("Install Rack & Cabling")
+        s.apply_task_edit(
+            task.id,
+            TaskEdit(
+                name="Install Rack & Cabling",
+                description="Rack server, switches and structured cabling",
+                milestone=False,
+                duration=5.0,
+                percent_complete=25.0,
+                priority=600,
+                predecessor_id=None,
+                dependency_type="finish_to_start",
+                lag=0.0,
+                resource_id=net.id,
+                fp_complexity=None,
+                fp_points=None,
+                material_assignments=[(server.id, 1.0), (switch.id, 2.0), (cable.id, 100.0)],
+            ),
+        )
+
+        # Labour = 5d * 8h * £20 = £800; Materials = £5000 + 2*£1200 + 100*£6.49 = £8049; Total = £8849
+        self.assertAlmostEqual(task.estimated_work or 0.0, 40.0)
+        self.assertAlmostEqual(task.estimated_cost or 0.0, 8849.0)
+        ov = s.overview()
+        self.assertEqual(ov.resource_count, 3)
+        self.assertEqual(ov.material_count, 4)
+        self.assertAlmostEqual(ov.labour_cost, 800.0)
+        self.assertAlmostEqual(ov.material_cost, 8049.0)
+        self.assertAlmostEqual(ov.total_cost, 8849.0)
+
+        report = s.summary_report_text()
+        self.assertIn("MATERIALS & EQUIPMENT COSTS", report)
+        self.assertIn("Dell PowerEdge server", report)
+        self.assertIn("cat6 network cabling", report)
+
+        # Updating a material unit rate automatically recalculates task & assignment costs!
+        s.update_person(
+            switch.id,
+            "Cisco 24-port network switch",
+            1000.0,
+            resource_type="material",
+            material_label="unit",
+            initials="C",
+            parent_id=mats_hdr.id,
+        )
+        self.assertAlmostEqual(task.estimated_cost or 0.0, 8449.0)
+
+        # Save to .pfp and reopen cleanly
+        with tempfile.TemporaryDirectory() as tmp:
+            pfp = Path(tmp) / "infra.pfp"
+            s.save(pfp)
+            reopened = ProjectSession()
+            reopened.open_pfp(pfp)
+            self.assertEqual(reopened.overview().material_count, 4)
+            self.assertAlmostEqual(reopened.overview().material_cost, 7649.0)
+            self.assertAlmostEqual(reopened.overview().total_cost, 8449.0)
 
 
 if __name__ == "__main__":

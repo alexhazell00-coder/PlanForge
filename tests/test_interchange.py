@@ -670,5 +670,227 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["schema_version"]["const"], 1)
 
 
+class ProjectLibreRealWorldCalendarsAndMaterialsTests(unittest.TestCase):
+    """Regression tests covering real ProjectLibre XML exports (24 Hours / Night Shift / custom
+    shifts with 00:00:00 end-of-day midnight) and full Work + Material hierarchical Resource Sheets.
+    """
+
+    PROJECTLIBRE_REAL_WORLD_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Project xmlns="http://schemas.microsoft.com/project">
+  <Name>Enterprise Infrastructure Rollout</Name>
+  <StartDate>2026-10-05T08:00:00</StartDate>
+  <FinishDate>2026-10-16T17:00:00</FinishDate>
+  <CurrencySymbol>£</CurrencySymbol>
+  <Calendars>
+    <Calendar>
+      <UID>1</UID>
+      <Name>Standard</Name>
+      <IsBaseCalendar>1</IsBaseCalendar>
+      <WeekDays>
+        <WeekDay><DayType>1</DayType><DayWorking>0</DayWorking></WeekDay>
+        <WeekDay>
+          <DayType>2</DayType><DayWorking>1</DayWorking>
+          <WorkingTimes>
+            <WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime>
+            <WorkingTime><FromTime>12:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime>
+            <WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime>
+          </WorkingTimes>
+        </WeekDay>
+        <WeekDay>
+          <DayType>3</DayType><DayWorking>1</DayWorking>
+          <WorkingTimes>
+            <WorkingTime><FromTime>13:00:00</FromTime><ToTime>17:00:00</ToTime></WorkingTime>
+            <WorkingTime><FromTime>08:00:00</FromTime><ToTime>12:00:00</ToTime></WorkingTime>
+          </WorkingTimes>
+        </WeekDay>
+        <WeekDay><DayType>4</DayType><DayWorking>1</DayWorking></WeekDay>
+        <WeekDay><DayType>5</DayType><DayWorking>1</DayWorking></WeekDay>
+        <WeekDay><DayType>6</DayType><DayWorking>1</DayWorking></WeekDay>
+        <WeekDay><DayType>7</DayType><DayWorking>0</DayWorking></WeekDay>
+      </WeekDays>
+    </Calendar>
+    <Calendar>
+      <UID>2</UID>
+      <Name>24 Hours</Name>
+      <IsBaseCalendar>1</IsBaseCalendar>
+      <WeekDays>
+        <WeekDay>
+          <DayType>2</DayType><DayWorking>1</DayWorking>
+          <WorkingTimes>
+            <WorkingTime><FromTime>00:00:00</FromTime><ToTime>00:00:00</ToTime></WorkingTime>
+          </WorkingTimes>
+        </WeekDay>
+      </WeekDays>
+    </Calendar>
+    <Calendar>
+      <UID>3</UID>
+      <Name>Night Shift</Name>
+      <IsBaseCalendar>1</IsBaseCalendar>
+      <WeekDays>
+        <WeekDay>
+          <DayType>2</DayType><DayWorking>1</DayWorking>
+          <WorkingTimes>
+            <WorkingTime><FromTime>00:00:00</FromTime><ToTime>03:00:00</ToTime></WorkingTime>
+            <WorkingTime><FromTime>04:00:00</FromTime><ToTime>08:00:00</ToTime></WorkingTime>
+            <WorkingTime><FromTime>23:00:00</FromTime><ToTime>00:00:00</ToTime></WorkingTime>
+          </WorkingTimes>
+        </WeekDay>
+        <WeekDay>
+          <DayType>3</DayType><DayWorking>1</DayWorking>
+          <WorkingTimes>
+            <WorkingTime><FromTime>22:00:00</FromTime><ToTime>06:00:00</ToTime></WorkingTime>
+          </WorkingTimes>
+        </WeekDay>
+      </WeekDays>
+    </Calendar>
+  </Calendars>
+  <Tasks>
+    <Task>
+      <UID>0</UID><ID>0</ID><Name>Project Summary</Name><Summary>1</Summary><OutlineLevel>0</OutlineLevel>
+    </Task>
+    <Task>
+      <UID>1</UID><ID>1</ID><Name>Server Room Build &amp; Cabling</Name>
+      <Start>2026-10-05T08:00:00</Start><Finish>2026-10-09T17:00:00</Finish>
+      <Duration>PT40H0M0S</Duration><OutlineLevel>1</OutlineLevel>
+    </Task>
+    <Task>
+      <UID>2</UID><ID>2</ID><Name>Weekend Cutover Check</Name>
+      <Start>2026-10-10T08:00:00</Start><Finish>2026-10-09T17:00:00</Finish>
+      <Duration>PT0H0M0S</Duration><Milestone>1</Milestone><OutlineLevel>1</OutlineLevel>
+    </Task>
+  </Tasks>
+  <Resources>
+    <Resource>
+      <UID>1</UID><ID>1</ID><Name>MR.NewBrook</Name><Type>1</Type>
+      <Group>Managing director</Group><Initials>M</Initials><MaxUnits>1.0</MaxUnits>
+      <StandardRate>£35.00</StandardRate><OutlineLevel>1</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>2</UID><ID>2</ID><Name>Alex Hazell</Name><Type>1</Type>
+      <Group>project manager</Group><Initials>A</Initials><MaxUnits>1.0</MaxUnits>
+      <StandardRate>30</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>3</UID><ID>3</ID><Name>Software Devs</Name><Type>1</Type>
+      <Group>senior software engineer</Group><Initials>S</Initials><MaxUnits>1.0</MaxUnits>
+      <StandardRate>25</StandardRate><OutlineLevel>3</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>4</UID><ID>4</ID><Name>network infrastructure team</Name><Type>1</Type>
+      <Group>junior network engineer</Group><Initials>n</Initials><MaxUnits>1.0</MaxUnits>
+      <StandardRate>20</StandardRate><OutlineLevel>3</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>5</UID><ID>5</ID><Name>finance department</Name><Type>1</Type>
+      <Initials>f</Initials><MaxUnits>1.0</MaxUnits>
+      <StandardRate>0</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>6</UID><ID>6</ID><Name>Materials</Name><Type>0</Type>
+      <Initials>M</Initials><StandardRate>0</StandardRate><OutlineLevel>1</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>7</UID><ID>7</ID><Name>Dell PowerEdge server</Name><Type>0</Type>
+      <MaterialLabel>unit</MaterialLabel><Initials>D</Initials>
+      <StandardRate>5000</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>8</UID><ID>8</ID><Name>Cisco 24-port network switch</Name><Type>0</Type>
+      <MaterialLabel>unit</MaterialLabel><Initials>C</Initials>
+      <StandardRate>1200</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>9</UID><ID>9</ID><Name>cat6 network cabling</Name><Type>0</Type>
+      <MaterialLabel>metre</MaterialLabel><Initials>c</Initials>
+      <StandardRate>6.49</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+    <Resource>
+      <UID>10</UID><ID>10</ID><Name>APC UPS Battery Backup</Name><Type>0</Type>
+      <MaterialLabel>unit</MaterialLabel><Initials>A</Initials>
+      <StandardRate>800</StandardRate><OutlineLevel>2</OutlineLevel>
+    </Resource>
+  </Resources>
+  <Assignments>
+    <Assignment><UID>1</UID><TaskUID>1</TaskUID><ResourceUID>4</ResourceUID><Units>1.0</Units><Work>PT40H0M0S</Work><Cost>800</Cost></Assignment>
+    <Assignment><UID>2</UID><TaskUID>1</TaskUID><ResourceUID>7</ResourceUID><Units>1.0</Units></Assignment>
+    <Assignment><UID>3</UID><TaskUID>1</TaskUID><ResourceUID>8</ResourceUID><Units>2.0</Units></Assignment>
+    <Assignment><UID>4</UID><TaskUID>1</TaskUID><ResourceUID>9</ResourceUID><Units>100.0</Units></Assignment>
+    <Assignment><UID>5</UID><TaskUID>1</TaskUID><ResourceUID>10</ResourceUID><Units>1.0</Units></Assignment>
+  </Assignments>
+</Project>
+"""
+
+    def test_projectlibre_24h_night_shift_and_material_hierarchy_import_and_round_trip(self) -> None:
+        from planforge.interchange.mspdi_adapter import export_project as export_mspdi
+        from planforge.interchange.mspdi_adapter import import_bytes as import_mspdi
+        from planforge.scheduling.engine import calculate_daily_capacity
+
+        imported = import_mspdi(self.PROJECTLIBRE_REAL_WORLD_XML.encode("utf-8"), source_name="rollout.xml")
+        self.assertTrue(imported.success, imported.issues)
+        project = imported.project
+        assert project is not None
+
+        # Verify all 10 Work + Material resources, hierarchy, groups, labels, initials, rates
+        self.assertEqual(len(project.resources), 10)
+        by_name = {r.name: r for r in project.resources}
+
+        mr = by_name["MR.NewBrook"]
+        alex = by_name["Alex Hazell"]
+        devs = by_name["Software Devs"]
+        net = by_name["network infrastructure team"]
+        fin = by_name["finance department"]
+        mats = by_name["Materials"]
+        server = by_name["Dell PowerEdge server"]
+        switch = by_name["Cisco 24-port network switch"]
+        cable = by_name["cat6 network cabling"]
+        ups = by_name["APC UPS Battery Backup"]
+
+        self.assertEqual(mr.resource_type, "work")
+        self.assertEqual(mr.standard_rate, 35.0)
+        self.assertEqual(mr.custom_fields.get("group"), "Managing director")
+        self.assertIsNone(mr.custom_fields.get("parent_id"))
+
+        self.assertEqual(alex.custom_fields.get("parent_id"), mr.id)
+        self.assertEqual(devs.custom_fields.get("parent_id"), alex.id)
+        self.assertEqual(net.custom_fields.get("parent_id"), alex.id)
+        self.assertEqual(fin.custom_fields.get("parent_id"), mr.id)
+
+        self.assertEqual(mats.resource_type, "material")
+        self.assertIsNone(mats.custom_fields.get("parent_id"))
+        self.assertEqual(server.resource_type, "material")
+        self.assertEqual(server.custom_fields.get("parent_id"), mats.id)
+        self.assertEqual(server.custom_fields.get("material_label"), "unit")
+        self.assertEqual(server.standard_rate, 5000.0)
+        self.assertEqual(cable.custom_fields.get("material_label"), "metre")
+        self.assertAlmostEqual(cable.standard_rate or 0.0, 6.49)
+
+        # Material assignments compute cost from units * unit_rate and DO NOT inflate work hours/day!
+        task = next(t for t in project.tasks if t.name == "Server Room Build & Cabling")
+        self.assertAlmostEqual(calculate_daily_capacity(task, project), 8.0)
+        costs_by_res = {a.resource_id: a.cost for a in project.assignments}
+        self.assertAlmostEqual(costs_by_res[server.id] or 0.0, 5000.0)
+        self.assertAlmostEqual(costs_by_res[switch.id] or 0.0, 2400.0)
+        self.assertAlmostEqual(costs_by_res[cable.id] or 0.0, 649.0)
+        self.assertAlmostEqual(costs_by_res[ups.id] or 0.0, 800.0)
+
+        # Round-trip export -> re-import preserves hierarchy, material labels, rates, and assignments
+        exported = export_mspdi(project)
+        self.assertTrue(exported.success, exported.issues)
+        reimported = import_mspdi(exported.data or b"")
+        self.assertTrue(reimported.success, reimported.issues)
+        assert reimported.project is not None
+        re_by_name = {r.name: r for r in reimported.project.resources}
+        self.assertEqual(re_by_name["Dell PowerEdge server"].resource_type, "material")
+        self.assertEqual(re_by_name["Dell PowerEdge server"].custom_fields.get("material_label"), "unit")
+        self.assertEqual(
+            re_by_name["Dell PowerEdge server"].custom_fields.get("parent_id"),
+            re_by_name["Materials"].id,
+        )
+        self.assertEqual(
+            re_by_name["Software Devs"].custom_fields.get("parent_id"),
+            re_by_name["Alex Hazell"].id,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
