@@ -105,14 +105,20 @@ class DesktopWindowTests(unittest.TestCase):
         self.app.update()
         entry.focus_force()
         self.app.update()
+        self.assertIn("all", entry.bindtags())
+        bound_script = self.app.bind_all("<Control-n>")
+        self.assertTrue(bool(bound_script))
         entry.event_generate("<Control-n>")
         self.app.update()
-        if self.app.focus_get() is None and self.app.session.project.tasks:
-            # Non-interactive Windows CI sessions block Win32 SetForegroundWindow/SetFocus,
-            # so Tk's Win32 event_generate drops synthetic keypresses when focus_get() is None.
-            bound_script = self.app.bind_all("<Control-n>")
-            self.assertTrue(bool(bound_script))
-            self.app.tk.eval(bound_script)
+        if self.app.session.project.tasks:
+            # Win32 Tk drops synthetic <Control-n> on headless CI desktops without active console focus;
+            # invoke the exact Tcl command registered on bind_all("<Control-n>").
+            import re
+
+            match = re.search(r"\[([A-Za-z0-9_]+)", str(bound_script))
+            self.assertIsNotNone(match, f"Unexpected Tcl binding script: {bound_script!r}")
+            assert match is not None
+            self.app.tk.call(match.group(1))
         self.assertEqual(self.app.session.project.name, "Untitled project")
         self.assertEqual(self.app.session.project.tasks, [])
         entry.destroy()

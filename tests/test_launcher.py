@@ -73,10 +73,10 @@ class FakeRunner:
 
 
 def same_path(left, right) -> bool:
-    """Compare paths the way the current OS does (case, separators)."""
-    return os.path.normcase(os.path.normpath(os.path.abspath(str(left)))) == os.path.normcase(
-        os.path.normpath(os.path.abspath(str(right)))
-    )
+    """Compare paths the way the current OS does (case, separators, Windows 8.3 short names)."""
+    l_resolved = os.path.normcase(os.path.normpath(str(Path(left).resolve())))
+    r_resolved = os.path.normcase(os.path.normpath(str(Path(right).resolve())))
+    return l_resolved == r_resolved
 
 
 def linux_platform(**release):
@@ -348,14 +348,15 @@ class VenvStructureTests(unittest.TestCase):
         self.assertEqual(launcher.validate_venv(self.paths).status, "invalid")
 
     def test_real_venv_is_validated(self) -> None:
+        host_paths = launcher.venv_paths(self.root, launcher.detect_platform())
         created = subprocess.run(
-            [sys.executable, "-m", "venv", str(self.paths.root)],
+            [sys.executable, "-m", "venv", str(host_paths.root)],
             capture_output=True,
             text=True,
             timeout=120,
         )
         self.assertEqual(created.returncode, 0, created.stderr)
-        state = launcher.validate_venv(self.paths)
+        state = launcher.validate_venv(host_paths)
         self.assertEqual(state.status, "ready", state.reason)
         assert state.info is not None
         self.assertEqual(state.info.version, tuple(sys.version_info[:3]))
@@ -930,7 +931,13 @@ class FakeAppTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.temp.cleanup()
+        for _ in range(5):
+            try:
+                cls.temp.cleanup()
+                return
+            except OSError:
+                time.sleep(0.1)
+        shutil.rmtree(cls.base, ignore_errors=True)
 
     def invoke(self, *args, cwd=None, env=None):
         environment = os.environ.copy()

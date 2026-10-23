@@ -60,7 +60,7 @@ jobs:
         run: |
           if ! python -m unittest discover -s tests -v > test_output.log 2>&1; then
             cat test_output.log
-            LAST_LINES="$(tail -n 35 test_output.log | tr '\r\n' '  ' | sed 's/%/%25/g')"
+            LAST_LINES="$(tail -n 90 test_output.log | tr '\r\n' '  ' | sed 's/%/%25/g')"
             echo "::error title=Unit test failure::$LAST_LINES"
             exit 1
           fi
