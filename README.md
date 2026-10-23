@@ -1,5 +1,7 @@
 # PlanForge — Project Planner & Schedule Manager
 
+![Your icon](docs/icon_transparent_background.png)
+
 PlanForge is an offline project planning, scheduling, and estimation application with comprehensive interoperability across **ProjectLibre**, **Microsoft Project**, **GanttProject**, and the **Simple Function Point Calculator**.
 
 You create a project, assign people with rates and daily availability, estimate tasks (via function points or manual work hours), and PlanForge builds a dependency-aware schedule with critical path analysis. You can inspect the schedule as an interactive Gantt chart, analyze costs and workloads, track completion, and exchange files across applications without vendor lock-in.
