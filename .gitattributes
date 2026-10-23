@@ -2,9 +2,8 @@
 # Unix entry points free of CRLF line endings.
 *.bat text eol=crlf
 *.sh text eol=lf
-*.command text eol=lf
-PlanForge.app/Contents/MacOS/PlanForge text eol=lf
+PlanForgeLauncher.command text eol=lf
 PlanForgeLauncher.py text eol=lf
+run.command text eol=lf
 *.png binary
 *.ico binary
-*.icns binary

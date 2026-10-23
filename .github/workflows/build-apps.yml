@@ -23,12 +23,6 @@ jobs:
             artifact_glob: |
               dist/PlanForge.exe
               dist/PlanForge-Windows-*.zip
-          - os: macos-latest
-            platform_label: macOS
-            artifact_name: PlanForge-macOS-App
-            artifact_glob: |
-              dist/PlanForge-macOS.dmg
-              dist/PlanForge-macOS.zip
           - os: ubuntu-latest
             platform_label: Linux
             artifact_name: PlanForge-Linux-App
@@ -43,8 +37,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12 with Tkinter (Windows & macOS)
-        if: runner.os != 'Linux'
+      - name: Set up Python 3.12 with Tkinter (Windows)
+        if: runner.os == 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -62,10 +56,28 @@ jobs:
           sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
 
       - name: Run full test suite
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          if ! python -m unittest discover -s tests -v > test_output.log 2>&1; then
+            cat test_output.log
+            LAST_LINES="$(tail -n 35 test_output.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Unit test failure::$LAST_LINES"
+            exit 1
+          fi
+          cat test_output.log
+          rm -f test_output.log
 
       - name: Build native PlanForge desktop application with icon
-        run: python packaging/build_app.py --install-pyinstaller
+        shell: bash
+        run: |
+          if ! python packaging/build_app.py --install-pyinstaller > build_output.log 2>&1; then
+            cat build_output.log
+            LAST_LINES="$(tail -n 35 build_output.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=Native build failure::$LAST_LINES"
+            exit 1
+          fi
+          cat build_output.log
+          rm -f build_output.log
 
       - name: Smoke-test compiled native executable (CLI conversion check)
         shell: bash
@@ -73,9 +85,6 @@ jobs:
           mkdir -p build
           if [ "$RUNNER_OS" = "Windows" ]; then
             ./dist/PlanForge.exe --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
-            test -s build/smoke.json
-          elif [ "$RUNNER_OS" = "macOS" ]; then
-            ./dist/PlanForge.app/Contents/MacOS/PlanForge --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
             test -s build/smoke.json
           else
             ./dist/PlanForge/PlanForge --import-file tests/fixtures/sample_projectlibre.xml --export-file build/smoke.json --export-format planforge-json
@@ -102,7 +111,7 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Publish GitHub Release with Windows, macOS & Linux apps
+      - name: Publish GitHub Release with Windows & Linux apps
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

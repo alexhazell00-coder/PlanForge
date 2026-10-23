@@ -1,16 +1,13 @@
-"""Install native OS shortcuts / application menu entries with PlanForge's icon.
+"""Install native OS shortcuts / application menu entries with PlanForge's icon (Windows & Linux).
 
-Works immediately on a fresh clone OR with built binaries in ``dist/``:
 - Windows : Start Menu + Desktop ``PlanForge.lnk`` shortcuts using ``planforge.ico``
             (launches built ``PlanForge.exe`` if present, otherwise windowless ``pythonw.exe``)
-- macOS   : ``~/Applications/PlanForge.app`` bundle with ``planforge.icns``
 - Linux   : ``~/.local/share/applications/planforge.desktop`` + XDG hicolor PNG icons
 """
 
 from __future__ import annotations
 
 import os
-import plistlib
 import shutil
 import stat
 import subprocess
@@ -81,93 +78,15 @@ def install_windows(icon_files: dict[str, Path], *, target_dir: Path | None = No
     return created
 
 
-def create_macos_launcher_bundle(
-    dest_app: Path,
-    icns_path: Path,
-    *,
-    fallback_repo: Path | None = None,
-) -> Path:
-    """Create or refresh a standalone clickable macOS ``PlanForge.app`` bundle."""
-    contents = dest_app / "Contents"
-    macos_dir = contents / "MacOS"
-    res_dir = contents / "Resources"
-    macos_dir.mkdir(parents=True, exist_ok=True)
-    res_dir.mkdir(parents=True, exist_ok=True)
-
-    shutil.copy2(icns_path, res_dir / "planforge.icns")
-
-    info_data = {
-        "CFBundleName": "PlanForge",
-        "CFBundleDisplayName": "PlanForge",
-        "CFBundleIdentifier": "io.planforge.desktop",
-        "CFBundleVersion": "1.3.0",
-        "CFBundleShortVersionString": "1.3.0",
-        "CFBundlePackageType": "APPL",
-        "CFBundleExecutable": "PlanForge",
-        "CFBundleIconFile": "planforge.icns",
-        "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "11.0",
-    }
-    (contents / "Info.plist").write_bytes(plistlib.dumps(info_data))
-
-    if fallback_repo is not None:
-        repo_str = str(fallback_repo).replace('"', '\\"')
-        else_branch = f'else\n    REPO_DIR="{repo_str}"\n'
-    else:
-        else_branch = (
-            'else\n'
-            '    osascript -e \'display alert "PlanForge" message "Keep PlanForge.app inside the PlanForge folder or run InstallApp.command once."\' >/dev/null 2>&1 || true\n'
-            '    exit 1\n'
-        )
-    launcher_script = (
-        '#!/bin/sh\n'
-        'BUNDLE_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"\n'
-        'if [ -f "$BUNDLE_ROOT/PlanForgeLauncher.sh" ]; then\n'
-        '    REPO_DIR="$BUNDLE_ROOT"\n'
-        f'{else_branch}'
-        'fi\n'
-        'export PATH="/opt/homebrew/bin:/usr/local/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:$PATH"\n'
-        'for arg in "$@"; do\n'
-        '    case "$arg" in\n'
-        '        -psn_*) ;;\n'
-        '        *) set -- "$@" "$arg" ;;\n'
-        '    esac\n'
-        '    shift\n'
-        'done\n'
-        'exec /bin/sh "$REPO_DIR/PlanForgeLauncher.sh" "$@"\n'
-    )
-    exe_file = macos_dir / "PlanForge"
-    exe_file.write_text(launcher_script, encoding="utf-8")
-    _make_executable(exe_file)
-    return dest_app
-
-
-def install_macos(icon_files: dict[str, Path], *, target_dir: Path | None = None) -> list[Path]:
-    icns_path = icon_files["icns"]
-    repo_app = create_macos_launcher_bundle(REPO_ROOT / "PlanForge.app", icns_path)
-    apps_dir = target_dir or (Path.home() / "Applications")
-    apps_dir.mkdir(parents=True, exist_ok=True)
-    dest = apps_dir / "PlanForge.app"
-    built_app = REPO_ROOT / "dist" / "PlanForge.app"
-    if dest.exists():
-        shutil.rmtree(dest)
-    if built_app.is_dir():
-        shutil.copytree(built_app, dest, symlinks=True)
-    else:
-        create_macos_launcher_bundle(dest, icns_path, fallback_repo=REPO_ROOT)
-    return [repo_app, dest]
-
-
 def install_linux(icon_files: dict[str, Path], *, data_home: Path | None = None) -> list[Path]:
     xdg_data = data_home or Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     created: list[Path] = []
     for size in PNG_EXPORT_SIZES:
-        if size <= 512:
-            icon_dir = xdg_data / "icons" / "hicolor" / f"{size}x{size}" / "apps"
-            icon_dir.mkdir(parents=True, exist_ok=True)
-            dest_icon = icon_dir / "planforge.png"
-            shutil.copy2(icon_files[f"png_{size}"], dest_icon)
-            created.append(dest_icon)
+        icon_dir = xdg_data / "icons" / "hicolor" / f"{size}x{size}" / "apps"
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        dest_icon = icon_dir / "planforge.png"
+        shutil.copy2(icon_files[f"png_{size}"], dest_icon)
+        created.append(dest_icon)
 
     built_bin = REPO_ROOT / "dist" / "PlanForge" / "PlanForge"
     exec_cmd = f'"{built_bin}" %f' if built_bin.is_file() else f'"{REPO_ROOT / "PlanForgeLauncher.sh"}" %f'
@@ -204,15 +123,16 @@ def install_linux(icon_files: dict[str, Path], *, data_home: Path | None = None)
 
 
 def main() -> int:
-    icon_files = generate_icon_bundle()
-    create_macos_launcher_bundle(REPO_ROOT / "PlanForge.app", icon_files["icns"])
+    if sys.platform == "darwin":
+        print(
+            "Note: macOS has no official native app launcher. "
+            "Launch PlanForge via PlanForgeLauncher.command or ./PlanForgeLauncher.sh.",
+            file=sys.stderr,
+        )
+        return 1
 
-    if sys.platform == "win32":
-        installed = install_windows(icon_files)
-    elif sys.platform == "darwin":
-        installed = install_macos(icon_files)
-    else:
-        installed = install_linux(icon_files)
+    icon_files = generate_icon_bundle()
+    installed = install_windows(icon_files) if sys.platform == "win32" else install_linux(icon_files)
 
     print("Installed PlanForge application launchers with icon:")
     for path in installed:

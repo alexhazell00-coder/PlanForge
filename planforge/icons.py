@@ -1,9 +1,8 @@
-"""Native multi-platform icon builder and runtime window-icon loader.
+"""Native Windows & Linux icon builder and runtime window-icon loader.
 
 Reads ``docs/icon_transparent_background.png`` (using only Python's standard
 library ``zlib`` and ``struct``) and generates:
-- ``planforge/assets/planforge.ico``  — Windows multi-size icon (16..256 px)
-- ``planforge/assets/planforge.icns`` — macOS Retina icon family (16..1024 px)
+- ``planforge/assets/planforge.ico`` — Windows multi-size icon (16..256 px)
 - ``planforge/assets/planforge-<size>.png`` & ``planforge.png`` — Linux / XDG & Tk icons
 """
 
@@ -18,19 +17,7 @@ from typing import Any, Sequence
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 ICO_SIZES: tuple[int, ...] = (16, 24, 32, 48, 64, 128, 256)
-PNG_EXPORT_SIZES: tuple[int, ...] = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
-# Standard Apple ICNS PNG chunk types (supported since macOS 10.7+, including Retina @2x)
-ICNS_CHUNKS: tuple[tuple[bytes, int], ...] = (
-    (b"icp4", 16),
-    (b"icp5", 32),
-    (b"icp6", 64),
-    (b"ic07", 128),
-    (b"ic08", 256),
-    (b"ic09", 512),
-    (b"ic10", 1024),
-    (b"ic11", 32),   # 16x16@2x
-    (b"ic12", 64),   # 32x32@2x
-)
+PNG_EXPORT_SIZES: tuple[int, ...] = (16, 24, 32, 48, 64, 128, 256, 512)
 
 APP_USER_MODEL_ID = "PlanForge.Desktop.Application.1"
 
@@ -65,11 +52,6 @@ def source_icon_path(repo_root: Path | None = None) -> Path:
         if path.is_file():
             return path
     return candidates[0]
-
-
-# ---------------------------------------------------------------------------
-# Pure-stdlib 8-bit RGB/RGBA PNG codec + premultiplied-alpha resampler
-# ---------------------------------------------------------------------------
 
 
 def _paeth_predictor(a: int, b: int, c: int) -> int:
@@ -247,117 +229,61 @@ def pad_to_square_rgba(width: int, height: int, rgba: bytes | bytearray) -> tupl
 
 
 def resize_square_rgba(side: int, rgba: bytes | bytearray, target: int) -> bytearray:
-    """Resize a square RGBA image to ``target x target`` using premultiplied-alpha
-    box integration (downscaling) or bilinear interpolation (upscaling).
-    """
+    """Resize a square RGBA image to ``target x target`` in premultiplied RGBA space."""
     if target == side:
         return bytearray(rgba)
 
     out = bytearray(target * target * 4)
     scale = side / target
 
-    if target < side:
-        # Exact continuous box filter in premultiplied RGBA space for crisp icons
-        x_spans: list[tuple[int, int, list[tuple[int, float]]]] = []
-        for tx in range(target):
-            sx0 = tx * scale
-            sx1 = (tx + 1) * scale
-            ix0 = int(sx0)
-            ix1 = min(side - 1, int(sx1))
-            weights: list[tuple[int, float]] = []
-            for ix in range(ix0, ix1 + 1):
-                left = max(sx0, float(ix))
-                right = min(sx1, float(ix + 1))
-                w = right - left
-                if w > 0.0:
-                    weights.append((ix * 4, w))
-            x_spans.append((ix0, ix1, weights))
+    x_spans: list[tuple[int, int, list[tuple[int, float]]]] = []
+    for tx in range(target):
+        sx0 = tx * scale
+        sx1 = (tx + 1) * scale
+        ix0 = int(sx0)
+        ix1 = min(side - 1, int(sx1))
+        weights: list[tuple[int, float]] = []
+        for ix in range(ix0, ix1 + 1):
+            left = max(sx0, float(ix))
+            right = min(sx1, float(ix + 1))
+            w = right - left
+            if w > 0.0:
+                weights.append((ix * 4, w))
+        x_spans.append((ix0, ix1, weights))
 
-        for ty in range(target):
-            sy0 = ty * scale
-            sy1 = (ty + 1) * scale
-            iy0 = int(sy0)
-            iy1 = min(side - 1, int(sy1))
-            y_weights: list[tuple[int, float]] = []
-            for iy in range(iy0, iy1 + 1):
-                top = max(sy0, float(iy))
-                bot = min(sy1, float(iy + 1))
-                w = bot - top
-                if w > 0.0:
-                    y_weights.append((iy * side * 4, w))
-
-            row_out = ty * target * 4
-            for tx in range(target):
-                pr = pg = pb = pa = total_w = 0.0
-                for row_off, wy in y_weights:
-                    for col_off, wx in x_spans[tx][2]:
-                        w = wx * wy
-                        idx = row_off + col_off
-                        a = rgba[idx + 3] / 255.0
-                        pr += rgba[idx] * a * w
-                        pg += rgba[idx + 1] * a * w
-                        pb += rgba[idx + 2] * a * w
-                        pa += a * w
-                        total_w += w
-                dst = row_out + tx * 4
-                if total_w > 0.0 and pa > 1e-6:
-                    alpha = min(1.0, pa / total_w)
-                    out[dst] = min(255, int(round(pr / pa)))
-                    out[dst + 1] = min(255, int(round(pg / pa)))
-                    out[dst + 2] = min(255, int(round(pb / pa)))
-                    out[dst + 3] = min(255, int(round(alpha * 255.0)))
-        return out
-
-    # Upscaling (e.g. 585 -> 1024): premultiplied-alpha bilinear interpolation
     for ty in range(target):
-        fy = (ty + 0.5) * scale - 0.5
-        y0 = max(0, min(side - 1, int(fy if fy >= 0 else 0)))
-        y1 = min(side - 1, y0 + 1)
-        wy = max(0.0, fy - y0)
-        wy0 = 1.0 - wy
-        row0 = y0 * side * 4
-        row1 = y1 * side * 4
+        sy0 = ty * scale
+        sy1 = (ty + 1) * scale
+        iy0 = int(sy0)
+        iy1 = min(side - 1, int(sy1))
+        y_weights: list[tuple[int, float]] = []
+        for iy in range(iy0, iy1 + 1):
+            top = max(sy0, float(iy))
+            bot = min(sy1, float(iy + 1))
+            w = bot - top
+            if w > 0.0:
+                y_weights.append((iy * side * 4, w))
+
         row_out = ty * target * 4
         for tx in range(target):
-            fx = (tx + 0.5) * scale - 0.5
-            x0 = max(0, min(side - 1, int(fx if fx >= 0 else 0)))
-            x1 = min(side - 1, x0 + 1)
-            wx = max(0.0, fx - x0)
-            w00 = (1.0 - wx) * wy0
-            w10 = wx * wy0
-            w01 = (1.0 - wx) * wy
-            w11 = wx * wy
-
-            i00 = row0 + x0 * 4
-            i10 = row0 + x1 * 4
-            i01 = row1 + x0 * 4
-            i11 = row1 + x1 * 4
-
-            a00 = rgba[i00 + 3] / 255.0
-            a10 = rgba[i10 + 3] / 255.0
-            a01 = rgba[i01 + 3] / 255.0
-            a11 = rgba[i11 + 3] / 255.0
-
-            pa = w00 * a00 + w10 * a10 + w01 * a01 + w11 * a11
+            pr = pg = pb = pa = total_w = 0.0
+            for row_off, wy in y_weights:
+                for col_off, wx in x_spans[tx][2]:
+                    w = wx * wy
+                    idx = row_off + col_off
+                    a = rgba[idx + 3] / 255.0
+                    pr += rgba[idx] * a * w
+                    pg += rgba[idx + 1] * a * w
+                    pb += rgba[idx + 2] * a * w
+                    pa += a * w
+                    total_w += w
             dst = row_out + tx * 4
-            if pa > 1e-6:
-                pr = w00 * rgba[i00] * a00 + w10 * rgba[i10] * a10 + w01 * rgba[i01] * a01 + w11 * rgba[i11] * a11
-                pg = (
-                    w00 * rgba[i00 + 1] * a00
-                    + w10 * rgba[i10 + 1] * a10
-                    + w01 * rgba[i01 + 1] * a01
-                    + w11 * rgba[i11 + 1] * a11
-                )
-                pb = (
-                    w00 * rgba[i00 + 2] * a00
-                    + w10 * rgba[i10 + 2] * a10
-                    + w01 * rgba[i01 + 2] * a01
-                    + w11 * rgba[i11 + 2] * a11
-                )
+            if total_w > 0.0 and pa > 1e-6:
+                alpha = min(1.0, pa / total_w)
                 out[dst] = min(255, int(round(pr / pa)))
                 out[dst + 1] = min(255, int(round(pg / pa)))
                 out[dst + 2] = min(255, int(round(pb / pa)))
-                out[dst + 3] = min(255, int(round(min(1.0, pa) * 255.0)))
+                out[dst + 3] = min(255, int(round(alpha * 255.0)))
     return out
 
 
@@ -393,27 +319,12 @@ def encode_ico(png_by_size: dict[int, bytes], sizes: Sequence[int] = ICO_SIZES) 
     return header + bytes(directory) + bytes(payload)
 
 
-def encode_icns(png_by_size: dict[int, bytes]) -> bytes:
-    """Pack square PNG images into an Apple macOS ``.icns`` icon family file."""
-    body = bytearray()
-    for ostype, size in ICNS_CHUNKS:
-        if size not in png_by_size:
-            continue
-        png_bytes = png_by_size[size]
-        body.extend(ostype)
-        body.extend(struct.pack(">I", 8 + len(png_bytes)))
-        body.extend(png_bytes)
-    if not body:
-        raise ValueError("At least one icon size is required to build an .icns file.")
-    return b"icns" + struct.pack(">I", 8 + len(body)) + bytes(body)
-
-
 def generate_icon_bundle(
     src_png: Path | None = None,
     out_dir: Path | None = None,
 ) -> dict[str, Path]:
-    """Generate ``planforge.ico``, ``planforge.icns``, and multi-size ``.png`` files
-    from ``docs/icon_transparent_background.png``.
+    """Generate ``planforge.ico`` and multi-size ``.png`` files from
+    ``docs/icon_transparent_background.png``.
     """
     source = src_png or source_icon_path()
     target_dir = out_dir or assets_dir()
@@ -423,19 +334,15 @@ def generate_icon_bundle(
     width, height, rgba = decode_png_rgba(raw_bytes)
     side, square_rgba = pad_to_square_rgba(width, height, rgba)
 
-    # Hierarchical step-down halving keeps small 16px/24px/32px icons extra sharp
     png_by_size: dict[int, bytes] = {}
     current_side = side
     current_rgba = square_rgba
     for size in sorted(PNG_EXPORT_SIZES, reverse=True):
-        if size > side:
-            scaled = resize_square_rgba(side, square_rgba, size)
-        else:
-            while current_side >= size * 2:
-                half = current_side // 2
-                current_rgba = resize_square_rgba(current_side, current_rgba, half)
-                current_side = half
-            scaled = resize_square_rgba(current_side, current_rgba, size)
+        while current_side >= size * 2:
+            half = current_side // 2
+            current_rgba = resize_square_rgba(current_side, current_rgba, half)
+            current_side = half
+        scaled = resize_square_rgba(current_side, current_rgba, size)
         png_by_size[size] = encode_png_rgba(size, size, scaled)
 
     written: dict[str, Path] = {}
@@ -458,16 +365,7 @@ def generate_icon_bundle(
     ico_path.write_bytes(encode_ico(png_by_size))
     written["ico"] = ico_path
 
-    icns_path = target_dir / "planforge.icns"
-    icns_path.write_bytes(encode_icns(png_by_size))
-    written["icns"] = icns_path
-
     return written
-
-
-# ---------------------------------------------------------------------------
-# Runtime window / taskbar / dock icon helpers
-# ---------------------------------------------------------------------------
 
 
 def configure_platform_app_identity() -> None:
@@ -480,7 +378,7 @@ def configure_platform_app_identity() -> None:
 
 
 def apply_window_icon(window: Any) -> bool:
-    """Attach the PlanForge icon to a Tkinter root window across Windows, macOS, and Linux."""
+    """Attach the PlanForge icon to a Tkinter root window."""
     folder = assets_dir()
     applied = False
 
@@ -506,7 +404,6 @@ def apply_window_icon(window: Any) -> bool:
             if fallback.is_file():
                 photo_images.append(tk.PhotoImage(file=str(fallback)))
         if photo_images:
-            # Keep strong references on the root window so Tk does not GC them
             window._icon_photos = photo_images
             window.iconphoto(True, *photo_images)
             applied = True
@@ -519,7 +416,7 @@ def apply_window_icon(window: Any) -> bool:
 def main() -> int:
     written = generate_icon_bundle()
     print(f"Generated {len(written)} icon assets in {assets_dir()}:")
-    for key in ("ico", "icns", "png"):
+    for key in ("ico", "png"):
         path = written[key]
         print(f"  - {path.name} ({path.stat().st_size:,} bytes)")
     return 0

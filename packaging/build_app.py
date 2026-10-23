@@ -1,15 +1,14 @@
-"""Cross-platform native application builder for PlanForge.
+"""Native application builder for PlanForge (Windows & Linux).
 
 Builds ready-to-distribute native desktop applications with
-``docs/icon_transparent_background.png`` compiled into platform-native icons:
+``docs/icon_transparent_background.png`` compiled into platform icons:
 
 - Windows : ``dist/PlanForge.exe`` + ``dist/PlanForge-Windows-x64.zip``
-- macOS   : ``dist/PlanForge.app`` + ``dist/PlanForge-macOS.dmg`` + ``.zip``
 - Linux   : ``dist/PlanForge/PlanForge`` + ``dist/PlanForge-Linux-x86_64.AppImage``
             (when ``appimagetool`` is on PATH) + ``dist/PlanForge-Linux-x86_64.tar.gz``
 
-Usage:
-    python packaging/build_app.py [--install-pyinstaller]
+Note: macOS has no official standalone native app launcher; macOS users can run
+PlanForge directly via ``PlanForgeLauncher.command`` or ``./PlanForgeLauncher.sh``.
 """
 
 from __future__ import annotations
@@ -67,12 +66,6 @@ def _ensure_pyinstaller(auto_install: bool) -> None:
     )
 
 
-def _sync_repo_macos_bundle_icon(icns_path: Path) -> None:
-    bundle_res = REPO_ROOT / "PlanForge.app" / "Contents" / "Resources"
-    if bundle_res.is_dir():
-        shutil.copy2(icns_path, bundle_res / "planforge.icns")
-
-
 def _package_windows(dist_dir: Path) -> list[Path]:
     exe_path = dist_dir / "PlanForge.exe"
     if not exe_path.is_file():
@@ -85,65 +78,6 @@ def _package_windows(dist_dir: Path) -> list[Path]:
     return [exe_path, zip_path]
 
 
-def _package_macos(dist_dir: Path) -> list[Path]:
-    app_bundle = dist_dir / "PlanForge.app"
-    if not app_bundle.is_dir():
-        raise FileNotFoundError(f"Expected macOS bundle not found: {app_bundle}")
-
-    # Ad-hoc sign so Apple Silicon Gatekeeper allows clean execution without "damaged app" errors
-    codesign = shutil.which("codesign")
-    if codesign:
-        subprocess.run(
-            [codesign, "--force", "--deep", "--sign", "-", str(app_bundle)],
-            check=True,
-        )
-
-    outputs: list[Path] = [app_bundle]
-    zip_path = dist_dir / "PlanForge-macOS.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    ditto = shutil.which("ditto")
-    if ditto:
-        subprocess.run(
-            [ditto, "-c", "-k", "--sequesterRsrc", "--keepParent", str(app_bundle), str(zip_path)],
-            check=True,
-        )
-    else:
-        shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=dist_dir, base_dir="PlanForge.app")
-    outputs.append(zip_path)
-
-    hdiutil = shutil.which("hdiutil")
-    if hdiutil:
-        dmg_stage = dist_dir / "_dmg_stage"
-        if dmg_stage.exists():
-            shutil.rmtree(dmg_stage)
-        dmg_stage.mkdir(parents=True)
-        shutil.copytree(app_bundle, dmg_stage / "PlanForge.app", symlinks=True)
-        (dmg_stage / "Applications").symlink_to("/Applications")
-        dmg_path = dist_dir / "PlanForge-macOS.dmg"
-        if dmg_path.exists():
-            dmg_path.unlink()
-        subprocess.run(
-            [
-                hdiutil,
-                "create",
-                "-volname",
-                "PlanForge",
-                "-srcfolder",
-                str(dmg_stage),
-                "-ov",
-                "-format",
-                "UDZO",
-                str(dmg_path),
-            ],
-            check=True,
-        )
-        shutil.rmtree(dmg_stage, ignore_errors=True)
-        outputs.append(dmg_path)
-
-    return outputs
-
-
 def _package_linux(dist_dir: Path, icon_files: dict[str, Path]) -> list[Path]:
     app_folder = dist_dir / "PlanForge"
     binary_path = app_folder / "PlanForge"
@@ -154,7 +88,6 @@ def _package_linux(dist_dir: Path, icon_files: dict[str, Path]) -> list[Path]:
     machine = platform.machine() or "x86_64"
     outputs: list[Path] = []
 
-    # Build standard AppDir structure for portable Linux desktop integration & AppImage
     appdir = dist_dir / "PlanForge.AppDir"
     if appdir.exists():
         shutil.rmtree(appdir)
@@ -195,12 +128,10 @@ def _package_linux(dist_dir: Path, icon_files: dict[str, Path]) -> list[Path]:
     shutil.copy2(main_png, appdir / "planforge.png")
     shutil.copy2(main_png, appdir / ".DirIcon")
     for size in PNG_EXPORT_SIZES:
-        if size <= 512:
-            icon_dest = appdir / "usr" / "share" / "icons" / "hicolor" / f"{size}x{size}" / "apps"
-            icon_dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(icon_files[f"png_{size}"], icon_dest / "planforge.png")
+        icon_dest = appdir / "usr" / "share" / "icons" / "hicolor" / f"{size}x{size}" / "apps"
+        icon_dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon_files[f"png_{size}"], icon_dest / "planforge.png")
 
-    # Package portable .tar.gz with embedded icons and install-desktop.sh
     shutil.copy2(main_png, app_folder / "planforge.png")
     portable_install = app_folder / "install-desktop.sh"
     portable_install.write_text(
@@ -255,9 +186,14 @@ def _package_linux(dist_dir: Path, icon_files: dict[str, Path]) -> list[Path]:
 
 
 def build_native_app(*, install_pyinstaller: bool = False) -> list[Path]:
-    print("Step 1/3: Generating native icons (.ico, .icns, .png) from docs/icon_transparent_background.png...")
+    if sys.platform == "darwin":
+        raise RuntimeError(
+            "macOS currently has no official native app launcher package. "
+            "Launch PlanForge via PlanForgeLauncher.command or ./PlanForgeLauncher.sh."
+        )
+
+    print("Step 1/3: Generating native icons (.ico, .png) from docs/icon_transparent_background.png...")
     icon_files = generate_icon_bundle()
-    _sync_repo_macos_bundle_icon(icon_files["icns"])
 
     print("Step 2/3: Running PyInstaller native bundle build...")
     _ensure_pyinstaller(install_pyinstaller)
@@ -266,9 +202,8 @@ def build_native_app(*, install_pyinstaller: bool = False) -> list[Path]:
     pyi_env = dict(os.environ)
     libdir = sysconfig.get_config_var("LIBDIR")
     if libdir and Path(libdir).is_dir():
-        var_name = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
-        existing_ld = pyi_env.get(var_name, "")
-        pyi_env[var_name] = f"{libdir}:{existing_ld}" if existing_ld else libdir
+        existing_ld = pyi_env.get("LD_LIBRARY_PATH", "")
+        pyi_env["LD_LIBRARY_PATH"] = f"{libdir}:{existing_ld}" if existing_ld else libdir
 
     proc = subprocess.run(
         [
@@ -295,11 +230,9 @@ def build_native_app(*, install_pyinstaller: bool = False) -> list[Path]:
             )
         raise RuntimeError(f"PyInstaller exited with status {proc.returncode}.")
 
-    print("Step 3/3: Packaging platform installer / distributable archives...")
+    print("Step 3/3: Packaging platform distributable archives...")
     if sys.platform == "win32":
         artifacts = _package_windows(dist_dir)
-    elif sys.platform == "darwin":
-        artifacts = _package_macos(dist_dir)
     else:
         artifacts = _package_linux(dist_dir, icon_files)
 
@@ -311,7 +244,7 @@ def build_native_app(*, install_pyinstaller: bool = False) -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build standalone native PlanForge desktop app.")
+    parser = argparse.ArgumentParser(description="Build standalone native PlanForge desktop app (Windows/Linux).")
     parser.add_argument(
         "--install-pyinstaller",
         action="store_true",

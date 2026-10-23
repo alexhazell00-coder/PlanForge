@@ -97,8 +97,10 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertEqual(self.app.session.project.tasks, [])
 
     def test_ctrl_n_works_while_a_child_widget_has_focus(self) -> None:
+        self.app.deiconify()
         entry = tk.Entry(self.app)
         entry.pack()
+        self.app.update()
         entry.focus_force()
         self.app.update()
         entry.event_generate("<Control-n>")
@@ -106,6 +108,7 @@ class DesktopWindowTests(unittest.TestCase):
         self.assertEqual(self.app.session.project.name, "Untitled project")
         self.assertEqual(self.app.session.project.tasks, [])
         entry.destroy()
+        self.app.withdraw()
 
     def test_theme_toggle_cycles_built_ins_without_changing_project(self) -> None:
         from planforge.config import THEMES

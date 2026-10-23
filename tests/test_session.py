@@ -454,6 +454,18 @@ class FileWorkflowTests(unittest.TestCase):
         self.assertEqual(bad_preview.source_format, "pfp")
 
 
+def _make_sharing_violation(src: Path | str, dst: Path | str | None = None) -> PermissionError:
+    """Create a realistic WinError 32 sharing violation across both Windows and POSIX Python."""
+    msg = "The process cannot access the file because it is being used by another process"
+    if os.name == "nt":
+        return PermissionError(13, msg, str(src), 32, str(dst) if dst is not None else None)
+    err = PermissionError(13, msg, str(src))
+    err.winerror = 32  # type: ignore[attr-defined]
+    if dst is not None:
+        err.filename2 = str(dst)
+    return err
+
+
 @contextmanager
 def _enforce_windows_file_locks():
     """Simulate Windows NT file locking where open SQLite handles block replace/unlink."""
@@ -499,26 +511,13 @@ def _enforce_windows_file_locks():
         src_path = Path(src).resolve()
         dst_path = Path(dst).resolve()
         if src_path in open_handles or dst_path in open_handles:
-            err = PermissionError(
-                13,
-                "The process cannot access the file because it is being used by another process",
-                str(src),
-            )
-            err.winerror = 32  # type: ignore[attr-defined]
-            err.filename2 = str(dst)
-            raise err
+            raise _make_sharing_violation(src, dst)
         return real_replace(src, dst)
 
     def windows_unlink(path, *args, **kwargs):
         resolved = Path(path).resolve()
         if resolved in open_handles:
-            err = PermissionError(
-                13,
-                "The process cannot access the file because it is being used by another process",
-                str(path),
-            )
-            err.winerror = 32  # type: ignore[attr-defined]
-            raise err
+            raise _make_sharing_violation(path)
         return real_unlink(path, *args, **kwargs)
 
     with (
@@ -577,14 +576,7 @@ class WindowsFileLockingTests(unittest.TestCase):
             nonlocal attempts
             attempts += 1
             if attempts <= 3:
-                err = PermissionError(
-                    13,
-                    "The process cannot access the file because it is being used by another process",
-                    str(src),
-                )
-                err.winerror = 32  # type: ignore[attr-defined]
-                err.filename2 = str(dst)
-                raise err
+                raise _make_sharing_violation(src, dst)
             return real_replace(src, dst)
 
         with (
@@ -601,14 +593,7 @@ class WindowsFileLockingTests(unittest.TestCase):
 
     def test_persistent_lock_error_cleans_up_temp_file_and_raises_session_error(self) -> None:
         def always_locked(src, dst):
-            err = PermissionError(
-                13,
-                "The process cannot access the file because it is being used by another process",
-                str(src),
-            )
-            err.winerror = 32  # type: ignore[attr-defined]
-            err.filename2 = str(dst)
-            raise err
+            raise _make_sharing_violation(src, dst)
 
         with (
             patch("planforge._atomic.os.replace", side_effect=always_locked),
