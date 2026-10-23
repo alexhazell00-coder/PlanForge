@@ -107,6 +107,12 @@ class DesktopWindowTests(unittest.TestCase):
         self.app.update()
         entry.event_generate("<Control-n>")
         self.app.update()
+        if self.app.focus_get() is None and self.app.session.project.tasks:
+            # Non-interactive Windows CI sessions block Win32 SetForegroundWindow/SetFocus,
+            # so Tk's Win32 event_generate drops synthetic keypresses when focus_get() is None.
+            bound_script = self.app.bind_all("<Control-n>")
+            self.assertTrue(bool(bound_script))
+            self.app.tk.eval(bound_script)
         self.assertEqual(self.app.session.project.name, "Untitled project")
         self.assertEqual(self.app.session.project.tasks, [])
         entry.destroy()
