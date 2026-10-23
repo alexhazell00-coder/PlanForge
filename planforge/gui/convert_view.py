@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import TYPE_CHECKING
 
 from planforge.gui.views import BaseView
+from planforge.storage.sqlite_store import save_project_to_pfp
 
 if TYPE_CHECKING:  # pragma: no cover
     from planforge.gui.app import PlanForgeApp
@@ -519,13 +520,16 @@ class ConvertView(BaseView):
         except Exception:
             pass
         try:
-            result = self.session.manager.export_file(project, fid, dest, overwrite=True)
-            if not result.success:
-                details = "; ".join(i.message for i in result.errors) or "Unknown error."
-                self.status_var.set(f"Export failed: {details}")
-                self._write_preview([f"Export failed for {fid}:"] + [i.message for i in result.errors])
-                messagebox.showerror("Export failed", details + "\n\nSee preview for details.", parent=self.app)
-                return
+            if fid == "pfp":
+                save_project_to_pfp(project, Path(dest))
+            else:
+                result = self.session.manager.export_file(project, fid, dest, overwrite=True)
+                if not result.success:
+                    details = "; ".join(i.message for i in result.errors) or "Unknown error."
+                    self.status_var.set(f"Export failed: {details}")
+                    self._write_preview([f"Export failed for {fid}:"] + [i.message for i in result.errors])
+                    messagebox.showerror("Export failed", details + "\n\nSee preview for details.", parent=self.app)
+                    return
             self.status_var.set(f"✓ Converted successfully: {dest}")
             self.success_var.set(f"✓ Saved to: {dest}\nFormat: {fid} • Tasks: {len(project.tasks)} • People: {len(project.resources)}")
             if not self._success_packed:

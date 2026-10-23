@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from planforge._atomic import atomic_replace, best_effort_unlink
 from planforge.config import CONFIG_DIR
 
 THEME_SCHEMA_VERSION = 1
@@ -92,12 +93,9 @@ def _atomic_json_write(path: Path, data: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        atomic_replace(temp_name, path)
     except BaseException:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
+        best_effort_unlink(temp_name)
         raise
 
 

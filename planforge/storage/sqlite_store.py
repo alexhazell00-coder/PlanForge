@@ -6,15 +6,15 @@ with transactional atomic saving and schema migration backups.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sqlite3
 import tempfile
-from datetime import date, datetime
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
+from planforge._atomic import atomic_replace, best_effort_unlink
 from planforge.interchange.json_adapter import export_project as project_to_json, import_bytes as project_from_json
 from planforge.interchange.validation import validate_project
 from planforge.model import Project
@@ -71,16 +71,17 @@ def save_project_to_pfp(project: Project, path: str | Path) -> None:
     temp_dir = dest.parent
     temp_file: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
+        fd, temp_file = tempfile.mkstemp(
             prefix=f".{dest.name}.",
             suffix=".tmp",
             dir=temp_dir,
-            delete=False,
-        ) as tmp:
-            temp_file = tmp.name
+        )
+        os.close(fd)
 
-        with sqlite3.connect(temp_file) as conn:
+        # Explicitly close the SQLite connection before replacing the target:
+        # sqlite3.Connection.__exit__ commits/rolls back transactions without
+        # closing the OS file handle, which causes [WinError 32] on Windows.
+        with closing(sqlite3.connect(temp_file)) as conn:
             init_db(conn)
             conn.execute(
                 """
@@ -91,15 +92,11 @@ def save_project_to_pfp(project: Project, path: str | Path) -> None:
             )
             conn.commit()
 
-        # Atomic replacement
-        os.replace(temp_file, dest)
+        # Atomic replacement (with transient lock retry for Windows/OneDrive)
+        atomic_replace(temp_file, dest)
         temp_file = None
     finally:
-        if temp_file is not None and os.path.exists(temp_file):
-            try:
-                os.unlink(temp_file)
-            except OSError:
-                pass
+        best_effort_unlink(temp_file)
 
 
 def load_project_from_pfp(path: str | Path) -> Project:
@@ -108,7 +105,7 @@ def load_project_from_pfp(path: str | Path) -> Project:
     if not source.exists() or not source.is_file():
         raise StorageError(f"File not found: {source}")
 
-    with sqlite3.connect(source) as conn:
+    with closing(sqlite3.connect(source)) as conn:
         cursor = conn.cursor()
         try:
             cursor.execute("SELECT value FROM meta WHERE key = 'schema_version';")

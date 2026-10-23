@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from planforge._atomic import atomic_replace, best_effort_unlink
 from planforge.config import CONFIG_DIR
 from planforge.model import Project
 from planforge.storage.sqlite_store import load_project_from_pfp, save_project_to_pfp
@@ -61,12 +62,9 @@ def save_recovery_snapshot(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, meta)
+        atomic_replace(temporary, meta)
     except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
+        best_effort_unlink(temporary)
         raise
     return RecoveryRecord(snapshot, project.id, project.name, source_path, saved_at)
 

@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Sequence
 
 from planforge import estimation
-from planforge.interchange import ImportResult, InterchangeManager, ProjectSummary, summarize_project
+from planforge.interchange import (
+    ImportResult,
+    InterchangeManager,
+    ProjectSummary,
+    ValidationIssue,
+    summarize_project,
+)
 from planforge.interchange.fp_adapter import import_bytes as fp_import_bytes
 from planforge.model import (
     Assignment,
@@ -283,6 +289,17 @@ class ProjectSession:
 
         ``format_id`` forces a format; ``None`` auto-detects it from the file contents.
         """
+        source = Path(path)
+        if format_id is None and source.suffix.casefold() == PFP_EXTENSION and source.is_file():
+            try:
+                project = load_project_from_pfp(source)
+            except Exception as exc:
+                return ImportResult(
+                    "pfp",
+                    None,
+                    (ValidationIssue("error", "pfp.read.failed", str(source), str(exc)),),
+                )
+            return ImportResult("pfp", project)
         return self.manager.import_file(path, format_id=format_id)
 
     def recalculate(self) -> None:

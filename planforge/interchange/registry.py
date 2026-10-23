@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import errno
 import io
 import json
 import os
@@ -10,6 +11,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from planforge._atomic import atomic_replace, best_effort_unlink
 
 from planforge.interchange import (
     csv_adapter,
@@ -512,10 +515,19 @@ class InterchangeManager:
                 temporary.flush()
                 os.fsync(temporary.fileno())
             if overwrite:
-                os.replace(temporary_name, destination)
+                atomic_replace(temporary_name, destination)
             else:
-                os.link(temporary_name, destination)
-                os.unlink(temporary_name)
+                try:
+                    os.link(temporary_name, destination)
+                    best_effort_unlink(temporary_name)
+                except OSError as exc:
+                    unsupported_link = (
+                        getattr(exc, "winerror", None) == 1
+                        or exc.errno in {errno.EXDEV, getattr(errno, "EOPNOTSUPP", -1), errno.ENOSYS, errno.EINVAL, errno.EPERM}
+                    )
+                    if not unsupported_link or destination.exists():
+                        raise
+                    atomic_replace(temporary_name, destination)
             temporary_name = None
         except OSError as exc:
             return ExportResult(
@@ -525,11 +537,7 @@ class InterchangeManager:
                 + (_issue("error", "file.write.failed", str(destination), f"Export was not saved: {exc}"),),
             )
         finally:
-            if temporary_name is not None:
-                try:
-                    os.unlink(temporary_name)
-                except OSError:
-                    pass
+            best_effort_unlink(temporary_name)
         return result
 
 
